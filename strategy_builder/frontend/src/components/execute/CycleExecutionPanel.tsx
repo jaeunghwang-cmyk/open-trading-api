@@ -1,7 +1,7 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { Activity, Clock3, Repeat, Wallet } from "lucide-react";
+import { useMemo, useState, type ReactNode } from "react";
+import { Activity, Clock3, Repeat, Trash2, Wallet, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { CycleStatusItem, ExecutionHistoryItem } from "@/lib/api";
 
@@ -9,13 +9,47 @@ interface CycleExecutionPanelProps {
   statuses: CycleStatusItem[];
   history: ExecutionHistoryItem[];
   isLoading?: boolean;
+  onDeleteSelected?: (eventIds: string[]) => Promise<void> | void;
+  onDeleteAll?: () => Promise<void> | void;
 }
 
 export function CycleExecutionPanel({
   statuses,
   history,
   isLoading,
+  onDeleteSelected,
+  onDeleteAll,
 }: CycleExecutionPanelProps) {
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const allSelected = useMemo(
+    () => history.length > 0 && selectedIds.length === history.length,
+    [history.length, selectedIds.length],
+  );
+
+  const toggleItem = (eventId: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(eventId) ? prev.filter((id) => id !== eventId) : [...prev, eventId],
+    );
+  };
+
+  const toggleAll = () => {
+    setSelectedIds(allSelected ? [] : history.map((item) => item.event_id));
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedIds.length === 0 || !onDeleteSelected) return;
+    await onDeleteSelected(selectedIds);
+    setSelectedIds([]);
+  };
+
+  const handleDeleteAll = async () => {
+    if (!onDeleteAll) return;
+    await onDeleteAll();
+    setSelectedIds([]);
+  };
+
+  const clearSelection = () => setSelectedIds([]);
+
   return (
     <div className="card p-6 space-y-5">
       <div className="flex items-center justify-between">
@@ -70,10 +104,52 @@ export function CycleExecutionPanel({
       </div>
 
       <div>
-        <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-2 mb-3">
-          <Activity className="w-4 h-4" />
-          최근 주문/체결
-        </h4>
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-2">
+            <Activity className="w-4 h-4" />
+            최근 주문/체결
+          </h4>
+          {history.length > 0 ? (
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-2 text-xs text-slate-500">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={toggleAll}
+                  className="rounded border-slate-300 text-primary focus:ring-primary"
+                />
+                전체선택
+              </label>
+              <button
+                type="button"
+                onClick={handleDeleteSelected}
+                disabled={selectedIds.length === 0}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                선택 삭제
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteAll}
+                className="inline-flex items-center gap-1 rounded-lg border border-red-200 dark:border-red-900/50 px-2.5 py-1.5 text-xs text-red-600 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/30"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                전체 삭제
+              </button>
+              {selectedIds.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={clearSelection}
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  선택 해제
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
         <div className="space-y-2 max-h-[360px] overflow-auto">
           {history.length === 0 ? (
             <div className="rounded-xl border border-dashed border-slate-200 dark:border-slate-700 p-4 text-sm text-slate-500">
@@ -89,25 +165,33 @@ export function CycleExecutionPanel({
                   className="rounded-xl border border-slate-200 dark:border-slate-700 p-3"
                 >
                   <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span
-                          className={cn(
-                            "text-xs px-2 py-0.5 rounded-full font-medium",
-                            isBuy
-                              ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-                              : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
-                          )}
-                        >
-                          {label}
-                        </span>
-                        <span className="font-medium">{item.stock_name}</span>
-                        {item.step_index ? (
-                          <span className="text-xs text-primary">{item.step_index}차</span>
-                        ) : null}
-                      </div>
-                      <div className="text-xs text-slate-400 font-mono mt-1">
-                        {item.stock_code} · 주문번호 {item.order_no}
+                    <div className="flex items-start gap-3">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.includes(item.event_id)}
+                        onChange={() => toggleItem(item.event_id)}
+                        className="mt-1 rounded border-slate-300 text-primary focus:ring-primary"
+                      />
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={cn(
+                              "text-xs px-2 py-0.5 rounded-full font-medium",
+                              isBuy
+                                ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                                : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+                            )}
+                          >
+                            {label}
+                          </span>
+                          <span className="font-medium">{item.stock_name}</span>
+                          {item.step_index ? (
+                            <span className="text-xs text-primary">{item.step_index}차</span>
+                          ) : null}
+                        </div>
+                        <div className="text-xs text-slate-400 font-mono mt-1">
+                          {item.stock_code} · 주문번호 {item.order_no}
+                        </div>
                       </div>
                     </div>
                     <div className="text-xs text-slate-500 flex items-center gap-1">

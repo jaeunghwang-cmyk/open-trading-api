@@ -71,6 +71,10 @@ class ExecuteRequest(BaseModel):
     auto_trade: bool = False
 
 
+class RunnerStartRequest(ExecuteRequest):
+    interval_seconds: int = 60
+
+
 class BuildRequest(BaseModel):
     name: str
     buy_condition: str
@@ -99,6 +103,20 @@ class ExecuteResponse(BaseModel):
     results: List[SignalResult] = []
     logs: List[LogEntry] = []
     message: Optional[str] = None
+
+
+class RunnerStatusResponse(BaseModel):
+    status: str
+    active: bool
+    authenticated: bool
+    current_mode: str
+    session: Optional[Dict[str, Any]] = None
+    last_started_at: Optional[str] = None
+    last_stopped_at: Optional[str] = None
+    last_run_at: Optional[str] = None
+    last_error: Optional[str] = None
+    last_results: List[SignalResult] = []
+    last_logs: List[LogEntry] = []
 
 
 # ============================================
@@ -199,9 +217,8 @@ async def list_indicators():
     }
 
 
-@router.post("/execute", response_model=ExecuteResponse)
-async def execute_strategy(request: ExecuteRequest):
-    """전략 실행"""
+def execute_strategy_once(request: ExecuteRequest) -> ExecuteResponse:
+    """전략 1회 실행 공용 로직"""
     strategy_id = request.strategy_id
     stocks = request.stocks
     params = request.params
@@ -310,6 +327,75 @@ async def execute_strategy(request: ExecuteRequest):
     except Exception as e:
         log("error", f"전략 실행 오류: {str(e)}")
         return ExecuteResponse(status='error', logs=logs, message=str(e))
+
+
+@router.post("/execute", response_model=ExecuteResponse)
+async def execute_strategy(request: ExecuteRequest):
+    """전략 1회 실행"""
+    return execute_strategy_once(request)
+
+
+@router.get("/runner/status", response_model=RunnerStatusResponse)
+async def get_runner_status_api():
+    from core.signal_runner import get_runner_status
+
+    runner = get_runner_status()
+    return RunnerStatusResponse(
+        status="success",
+        active=bool(runner.get("active")),
+        authenticated=bool(runner.get("authenticated")),
+        current_mode=str(runner.get("current_mode") or get_current_mode()),
+        session=runner.get("session"),
+        last_started_at=runner.get("last_started_at"),
+        last_stopped_at=runner.get("last_stopped_at"),
+        last_run_at=runner.get("last_run_at"),
+        last_error=runner.get("last_error"),
+        last_results=[SignalResult(**item) for item in runner.get("last_results", [])],
+        last_logs=[LogEntry(**item) for item in runner.get("last_logs", [])],
+    )
+
+
+@router.post("/runner/start", response_model=RunnerStatusResponse)
+async def start_runner_api(request: RunnerStartRequest):
+    from core.signal_runner import start_runner
+
+    if not is_authenticated():
+        raise HTTPException(status_code=401, detail="인증이 필요합니다")
+
+    runner = start_runner(request.model_dump())
+    return RunnerStatusResponse(
+        status="success",
+        active=bool(runner.get("active")),
+        authenticated=is_authenticated(),
+        current_mode=get_current_mode(),
+        session=runner.get("session"),
+        last_started_at=runner.get("last_started_at"),
+        last_stopped_at=runner.get("last_stopped_at"),
+        last_run_at=runner.get("last_run_at"),
+        last_error=runner.get("last_error"),
+        last_results=[SignalResult(**item) for item in runner.get("last_results", [])],
+        last_logs=[LogEntry(**item) for item in runner.get("last_logs", [])],
+    )
+
+
+@router.post("/runner/stop", response_model=RunnerStatusResponse)
+async def stop_runner_api():
+    from core.signal_runner import stop_runner
+
+    runner = stop_runner()
+    return RunnerStatusResponse(
+        status="success",
+        active=bool(runner.get("active")),
+        authenticated=is_authenticated(),
+        current_mode=get_current_mode(),
+        session=runner.get("session"),
+        last_started_at=runner.get("last_started_at"),
+        last_stopped_at=runner.get("last_stopped_at"),
+        last_run_at=runner.get("last_run_at"),
+        last_error=runner.get("last_error"),
+        last_results=[SignalResult(**item) for item in runner.get("last_results", [])],
+        last_logs=[LogEntry(**item) for item in runner.get("last_logs", [])],
+    )
 
 
 @router.post("/build")

@@ -3,7 +3,8 @@
  */
 
 import { apiGet, apiPost, type ApiResponse, type LogEntry } from "./client";
-import type { Signal, ExecuteRequest, ExecuteResponse, StrategyInfo } from "@/types/signal";
+import type { ExecuteRequest, ExecuteResponse, StrategyInfo, SignalRunnerStatusResponse } from "@/types/signal";
+export type { SignalRunnerStatusResponse } from "@/types/signal";
 import type { BuilderState } from "@/types/builder";
 
 export interface StrategiesListResponse {
@@ -33,6 +34,32 @@ export async function executeStrategy(
     auto_trade: autoTrade,
   };
   return apiPost<ExecuteResponse>("/api/strategies/execute", request);
+}
+
+export async function getSignalRunnerStatus(): Promise<SignalRunnerStatusResponse> {
+  return apiGet<SignalRunnerStatusResponse>("/api/strategies/runner/status");
+}
+
+export async function startSignalRunner(
+  strategyId: string,
+  stocks: string[],
+  params: Record<string, number> = {},
+  builderState?: BuilderState,
+  autoTrade: boolean = false,
+  intervalSeconds: number = 60,
+): Promise<SignalRunnerStatusResponse> {
+  return apiPost<SignalRunnerStatusResponse>("/api/strategies/runner/start", {
+    strategy_id: strategyId,
+    stocks,
+    params,
+    builder_state: builderState,
+    auto_trade: autoTrade,
+    interval_seconds: intervalSeconds,
+  });
+}
+
+export async function stopSignalRunner(): Promise<SignalRunnerStatusResponse> {
+  return apiPost<SignalRunnerStatusResponse>("/api/strategies/runner/stop");
 }
 
 export interface IndicatorsResponse {

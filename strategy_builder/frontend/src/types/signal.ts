@@ -63,6 +63,29 @@ export interface ExecuteResponse {
   message?: string;
 }
 
+export interface SignalRunnerSession {
+  strategy_id: string;
+  stocks: string[];
+  params: Record<string, number>;
+  builder_state?: BuilderState;
+  auto_trade?: boolean;
+  interval_seconds?: number;
+}
+
+export interface SignalRunnerStatusResponse {
+  status: "success" | "error";
+  active: boolean;
+  authenticated: boolean;
+  current_mode: string;
+  session?: SignalRunnerSession | null;
+  last_started_at?: string | null;
+  last_stopped_at?: string | null;
+  last_run_at?: string | null;
+  last_error?: string | null;
+  last_results: SignalResult[];
+  last_logs: LogEntry[];
+}
+
 export interface LogEntry {
   type: "info" | "success" | "error" | "warning";
   message: string;

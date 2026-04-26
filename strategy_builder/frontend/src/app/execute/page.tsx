@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Play, Loader2, Zap } from "lucide-react";
+import { Play, Loader2, Zap, Square, Radio } from "lucide-react";
 import {
   StrategySelector,
   SignalList,
@@ -20,11 +20,17 @@ import {
   getExecutionHistory,
   cancelOrder,
   clearAccountCache,
+  deleteExecutionHistory,
+  clearExecutionHistory,
+  getSignalRunnerStatus,
+  startSignalRunner,
+  stopSignalRunner,
   type PriceData,
   type PendingOrder,
   type ExecutionHistoryItem,
   type CycleStatusItem,
   type CancelOrderRequest,
+  type SignalRunnerStatusResponse,
 } from "@/lib/api";
 import type { SignalResult } from "@/types/signal";
 import type { OrderRequest, OrderResult } from "@/types/order";
@@ -44,6 +50,7 @@ export default function ExecutePage() {
     selectStrategy,
     setParam,
     execute,
+    restoreExecutionState,
   } = useStrategyExecutor();
   const { execute: executeOrder, isLoading: orderLoading } = useOrder();
 
@@ -71,6 +78,9 @@ export default function ExecutePage() {
   const [cycleStatuses, setCycleStatuses] = useState<CycleStatusItem[]>([]);
   const [executionSyncing, setExecutionSyncing] = useState(false);
   const [autoTradeEnabled, setAutoTradeEnabled] = useState(false);
+  const [runnerStatus, setRunnerStatus] = useState<SignalRunnerStatusResponse | null>(null);
+  const [runnerLoading, setRunnerLoading] = useState(false);
+  const [runnerHydrated, setRunnerHydrated] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -81,21 +91,6 @@ export default function ExecutePage() {
     if (typeof window === "undefined") return;
     localStorage.setItem("kis_auto_trade_enabled", String(autoTradeEnabled));
   }, [autoTradeEnabled]);
-
-  // Fetch holdings, balance, and pending orders when authenticated
-  // 순차 호출: 모의투자 모드의 초당 요청 제한 준수
-  useEffect(() => {
-    const fetchSequentially = async () => {
-      await fetchHoldings();
-      await fetchBalance();
-      await fetchPendingOrders();
-      await fetchExecutionHistory();
-    };
-    if (authStatus.authenticated) {
-      fetchSequentially();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authStatus.authenticated, authStatus.mode]);
 
   const fetchPendingOrders = useCallback(async () => {
     try {
@@ -123,15 +118,43 @@ export default function ExecutePage() {
     }
   }, []);
 
+  const fetchRunnerStatus = useCallback(async () => {
+    try {
+      const response = await getSignalRunnerStatus();
+      setRunnerStatus(response);
+      return response;
+    } catch (error) {
+      console.error("Failed to fetch signal runner status:", error);
+      return null;
+    }
+  }, []);
+
+  // Fetch holdings, balance, and pending orders when authenticated
+  // 순차 호출: 모의투자 모드의 초당 요청 제한 준수
+  useEffect(() => {
+    const fetchSequentially = async () => {
+      await fetchHoldings();
+      await fetchBalance();
+      await fetchPendingOrders();
+      await fetchExecutionHistory();
+      await fetchRunnerStatus();
+    };
+    if (authStatus.authenticated) {
+      fetchSequentially();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authStatus.authenticated, authStatus.mode, fetchRunnerStatus]);
+
   useEffect(() => {
     if (!authStatus.authenticated) {
       return;
     }
     const timer = setInterval(() => {
       fetchExecutionHistory();
+      fetchRunnerStatus();
     }, 10000);
     return () => clearInterval(timer);
-  }, [authStatus.authenticated, fetchExecutionHistory]);
+  }, [authStatus.authenticated, fetchExecutionHistory, fetchRunnerStatus]);
 
   const handleRefresh = useCallback(async () => {
     resetThrottle();
@@ -139,7 +162,37 @@ export default function ExecutePage() {
     await fetchBalance();
     await fetchPendingOrders();
     await fetchExecutionHistory();
-  }, [resetThrottle, fetchHoldings, fetchBalance, fetchPendingOrders, fetchExecutionHistory]);
+    await fetchRunnerStatus();
+  }, [resetThrottle, fetchHoldings, fetchBalance, fetchPendingOrders, fetchExecutionHistory, fetchRunnerStatus]);
+
+  useEffect(() => {
+    if (!runnerStatus || !runnerStatus.session || strategies.length === 0 || runnerHydrated) {
+      return;
+    }
+
+    const matched = strategies.find((strategy) => strategy.id === runnerStatus.session?.strategy_id);
+    if (!matched) {
+      return;
+    }
+
+    selectStrategy(matched);
+    for (const [name, value] of Object.entries(runnerStatus.session.params || {})) {
+      setParam(name, Number(value));
+    }
+    setStocks(runnerStatus.session.stocks || []);
+    setAutoTradeEnabled(Boolean(runnerStatus.session.auto_trade));
+    restoreExecutionState(runnerStatus.last_results || [], runnerStatus.last_logs || []);
+    setRunnerHydrated(true);
+  }, [runnerStatus, strategies, runnerHydrated, selectStrategy, setParam, restoreExecutionState]);
+
+  useEffect(() => {
+    if (!runnerStatus) {
+      return;
+    }
+    if ((runnerStatus.last_results?.length || runnerStatus.last_logs?.length) && runnerStatus.last_run_at) {
+      restoreExecutionState(runnerStatus.last_results || [], runnerStatus.last_logs || []);
+    }
+  }, [runnerStatus, restoreExecutionState]);
 
   const handleCancelOrder = useCallback(async (request: CancelOrderRequest) => {
     try {
@@ -156,6 +209,33 @@ export default function ExecutePage() {
     }
   }, [fetchPendingOrders, fetchBalance]);
 
+  const handleDeleteHistorySelected = useCallback(async (eventIds: string[]) => {
+    if (eventIds.length === 0) {
+      return;
+    }
+    if (!confirm(`선택한 ${eventIds.length}건의 주문/체결 이력을 삭제할까요?`)) {
+      return;
+    }
+    try {
+      await deleteExecutionHistory(eventIds);
+      await fetchExecutionHistory();
+    } catch {
+      alert("주문/체결 이력 삭제 중 오류가 발생했습니다");
+    }
+  }, [fetchExecutionHistory]);
+
+  const handleDeleteHistoryAll = useCallback(async () => {
+    if (!confirm("최근 주문/체결 이력을 전체 삭제할까요?")) {
+      return;
+    }
+    try {
+      await clearExecutionHistory();
+      await fetchExecutionHistory();
+    } catch {
+      alert("주문/체결 이력 전체 삭제 중 오류가 발생했습니다");
+    }
+  }, [fetchExecutionHistory]);
+
   const handleExecute = async () => {
     if (stocks.length === 0) {
       alert("종목을 입력해주세요");
@@ -164,6 +244,41 @@ export default function ExecutePage() {
     const results = await execute(stocks, autoTradeEnabled);
     if (autoTradeEnabled && results.length > 0) {
       await executeSignalsImmediately(results);
+    }
+  };
+
+  const handleStartRunner = async () => {
+    if (!selectedStrategy || stocks.length === 0) {
+      alert("전략과 종목을 먼저 설정해주세요");
+      return;
+    }
+    setRunnerLoading(true);
+    try {
+      const response = await startSignalRunner(
+        selectedStrategy.id,
+        stocks,
+        params,
+        selectedStrategy.isLocal ? selectedStrategy.builder_state : undefined,
+        autoTradeEnabled,
+      );
+      setRunnerStatus(response);
+      setRunnerHydrated(true);
+    } catch {
+      alert("시그널 시작 중 오류가 발생했습니다");
+    } finally {
+      setRunnerLoading(false);
+    }
+  };
+
+  const handleStopRunner = async () => {
+    setRunnerLoading(true);
+    try {
+      const response = await stopSignalRunner();
+      setRunnerStatus(response);
+    } catch {
+      alert("시그널 중지 중 오류가 발생했습니다");
+    } finally {
+      setRunnerLoading(false);
     }
   };
 
@@ -363,6 +478,33 @@ export default function ExecutePage() {
               )}
             </button>
 
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={handleStartRunner}
+                disabled={!selectedStrategy || stocks.length === 0 || runnerLoading || !authStatus.authenticated}
+                className="flex items-center justify-center gap-2 px-4 py-3 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium focus-ring"
+              >
+                {runnerLoading && !runnerStatus?.active ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Radio className="w-4 h-4" />
+                )}
+                시그널 시작
+              </button>
+              <button
+                onClick={handleStopRunner}
+                disabled={!runnerStatus?.active || runnerLoading}
+                className="flex items-center justify-center gap-2 px-4 py-3 bg-slate-700 text-white rounded-xl hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium focus-ring"
+              >
+                {runnerLoading && Boolean(runnerStatus?.active) ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Square className="w-4 h-4" />
+                )}
+                시그널 중지
+              </button>
+            </div>
+
             <label className="flex items-center justify-center gap-2 text-sm text-slate-600 dark:text-slate-300">
               <input
                 type="checkbox"
@@ -372,6 +514,23 @@ export default function ExecutePage() {
               />
               자동매매
             </label>
+
+            <div className="card p-4 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm font-medium text-slate-700 dark:text-slate-200">실행 상태</span>
+                <span className={`text-xs px-2 py-1 rounded-full ${runnerStatus?.active ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300" : "bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300"}`}>
+                  {runnerStatus?.active ? "실행 중" : "중지됨"}
+                </span>
+              </div>
+              <div className="mt-3 space-y-1 text-xs text-slate-500 dark:text-slate-400">
+                <p>실행 주기: 60초</p>
+                <p>마지막 실행: {runnerStatus?.last_run_at ? new Date(runnerStatus.last_run_at).toLocaleString() : "-"}</p>
+                <p>마지막 시작: {runnerStatus?.last_started_at ? new Date(runnerStatus.last_started_at).toLocaleString() : "-"}</p>
+                {runnerStatus?.last_error && (
+                  <p className="text-red-500">오류: {runnerStatus.last_error}</p>
+                )}
+              </div>
+            </div>
 
             {strategyError && (
               <p className="text-caption text-red-500 text-center" role="alert">{strategyError}</p>
@@ -398,6 +557,8 @@ export default function ExecutePage() {
               statuses={cycleStatuses}
               history={executionHistory}
               isLoading={executionSyncing}
+              onDeleteSelected={handleDeleteHistorySelected}
+              onDeleteAll={handleDeleteHistoryAll}
             />
           </div>
 

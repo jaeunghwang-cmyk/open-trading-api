@@ -435,3 +435,28 @@ def get_execution_snapshot(
         "cycle_statuses": cycle_statuses,
         "last_synced_at": state.get("last_synced_at"),
     }
+
+
+def delete_history_items(event_ids: List[str]) -> Dict[str, Any]:
+    state = _load_state()
+    existing = state.get("history", [])
+    targets = set(event_ids)
+    remaining = [item for item in existing if item.get("event_id") not in targets]
+    deleted_count = len(existing) - len(remaining)
+    state["history"] = remaining
+    _save_state(state)
+    return {
+        "deleted_count": deleted_count,
+        "remaining_count": len(remaining),
+    }
+
+
+def clear_history() -> Dict[str, Any]:
+    state = _load_state()
+    deleted_count = len(state.get("history", []))
+    state["history"] = []
+    _save_state(state)
+    return {
+        "deleted_count": deleted_count,
+        "remaining_count": 0,
+    }

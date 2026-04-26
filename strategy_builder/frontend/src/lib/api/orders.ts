@@ -123,6 +123,13 @@ export interface ExecutionHistoryResponse {
   last_synced_at?: string | null;
 }
 
+export interface DeleteExecutionHistoryResponse {
+  status: string;
+  deleted_count: number;
+  remaining_count: number;
+  message: string;
+}
+
 /**
  * 주문 실행
  */
@@ -166,6 +173,16 @@ export async function getPendingOrders(): Promise<PendingOrdersResponse> {
 
 export async function getExecutionHistory(): Promise<ExecutionHistoryResponse> {
   return apiGet<ExecutionHistoryResponse>("/api/orders/execution-history");
+}
+
+export async function deleteExecutionHistory(eventIds: string[]): Promise<DeleteExecutionHistoryResponse> {
+  return apiPost<DeleteExecutionHistoryResponse>("/api/orders/execution-history/delete", {
+    event_ids: eventIds,
+  });
+}
+
+export async function clearExecutionHistory(): Promise<DeleteExecutionHistoryResponse> {
+  return apiPost<DeleteExecutionHistoryResponse>("/api/orders/execution-history/clear");
 }
 
 /**

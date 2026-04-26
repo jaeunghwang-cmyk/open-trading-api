@@ -20,6 +20,7 @@ interface UseStrategyExecutorResult {
   setParam: (name: string, value: number) => void;
   execute: (stocks: string[], autoTrade?: boolean) => Promise<SignalResult[]>;
   clearSignals: () => void;
+  restoreExecutionState: (restoredSignals: SignalResult[], restoredLogs: LogEntry[]) => void;
 }
 
 export function useStrategyExecutor(): UseStrategyExecutorResult {
@@ -136,6 +137,12 @@ export function useStrategyExecutor(): UseStrategyExecutorResult {
     setLogs([]);
   }, []);
 
+  const restoreExecutionState = useCallback((restoredSignals: SignalResult[], restoredLogs: LogEntry[]) => {
+    setSignals(restoredSignals);
+    setLogs(restoredLogs);
+    setError(null);
+  }, []);
+
   // Load strategies on mount
   useEffect(() => {
     loadStrategies();
@@ -155,6 +162,7 @@ export function useStrategyExecutor(): UseStrategyExecutorResult {
     setParam,
     execute,
     clearSignals,
+    restoreExecutionState,
   };
 }
 

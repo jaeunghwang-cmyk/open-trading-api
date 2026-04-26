@@ -16,7 +16,12 @@ from fastapi import APIRouter, HTTPException
 import pandas as pd
 from pydantic import BaseModel
 
-from core.execution_tracker import get_execution_snapshot, record_order_submission
+from core.execution_tracker import (
+    clear_history,
+    delete_history_items,
+    get_execution_snapshot,
+    record_order_submission,
+)
 from core.order_executor import OrderExecutor
 from core.cycle_reentry_state import set_state
 from core.signal import Action, Signal
@@ -447,6 +452,17 @@ class ExecutionHistoryResponse(BaseModel):
     last_synced_at: str | None = None
 
 
+class DeleteExecutionHistoryRequest(BaseModel):
+    event_ids: list[str]
+
+
+class DeleteExecutionHistoryResponse(BaseModel):
+    status: str
+    deleted_count: int
+    remaining_count: int
+    message: str = ""
+
+
 class TelegramStatusResponse(BaseModel):
     status: str
     configured: bool
@@ -642,6 +658,36 @@ async def get_execution_history():
         history=[ExecutionHistoryItem(**item) for item in snapshot.get("history", [])],
         cycle_statuses=[CycleStatusItem(**item) for item in snapshot.get("cycle_statuses", [])],
         last_synced_at=snapshot.get("last_synced_at"),
+    )
+
+
+@router.post("/execution-history/delete", response_model=DeleteExecutionHistoryResponse)
+async def delete_execution_history_api(request: DeleteExecutionHistoryRequest):
+    """선택한 주문/체결 이력 삭제"""
+    if not is_authenticated():
+        raise HTTPException(status_code=401, detail="인증이 필요합니다")
+
+    result = delete_history_items(request.event_ids)
+    return DeleteExecutionHistoryResponse(
+        status="success",
+        deleted_count=result["deleted_count"],
+        remaining_count=result["remaining_count"],
+        message=f"{result['deleted_count']}건 삭제됨",
+    )
+
+
+@router.post("/execution-history/clear", response_model=DeleteExecutionHistoryResponse)
+async def clear_execution_history_api():
+    """주문/체결 이력 전체 삭제"""
+    if not is_authenticated():
+        raise HTTPException(status_code=401, detail="인증이 필요합니다")
+
+    result = clear_history()
+    return DeleteExecutionHistoryResponse(
+        status="success",
+        deleted_count=result["deleted_count"],
+        remaining_count=result["remaining_count"],
+        message="전체 삭제 완료",
     )
 
 
