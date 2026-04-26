@@ -42,8 +42,8 @@ export function OrderConfirmModal({
   const change = priceData?.change || 0;
   const changeRate = priceData?.change_rate || 0;
 
-  const [quantity, setQuantity] = useState(1);
-  const [orderType, setOrderType] = useState<OrderType>("limit");
+  const [quantity, setQuantity] = useState(signal.quantity || 1);
+  const [orderType, setOrderType] = useState<OrderType>(signal.target_price ? "limit" : "market");
   const [limitPrice, setLimitPrice] = useState(signal.target_price || currentPrice);
   const [showOrderbook, setShowOrderbook] = useState(true);
 
@@ -53,6 +53,11 @@ export function OrderConfirmModal({
       setLimitPrice(currentPrice);
     }
   }, [currentPrice, signal.target_price]);
+
+  useEffect(() => {
+    setQuantity(signal.quantity || 1);
+    setOrderType(signal.target_price ? "limit" : "market");
+  }, [signal.quantity, signal.target_price, signal.code]);
 
   const action: OrderAction = signal.action === "BUY" ? "BUY" : "SELL";
   const price = orderType === "market" ? currentPrice : limitPrice;
@@ -81,9 +86,10 @@ export function OrderConfirmModal({
       stock_name: signal.name,
       action,
       order_type: orderType,
-      price: orderType === "limit" ? limitPrice : undefined,
+      price: orderType === "limit" ? limitPrice : currentPrice,
       quantity,
       signal_reason: signal.reason,
+      strategy_context: signal.strategy_context,
     };
     await onConfirm(request);
   };

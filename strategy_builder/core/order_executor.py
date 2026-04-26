@@ -9,6 +9,7 @@ Applied Skills: skills/investment-strategy-framework.md
 
 import logging
 import math
+from datetime import datetime, timedelta
 
 import pandas as pd
 
@@ -89,6 +90,15 @@ class OrderExecutor:
             return pd.DataFrame()
 
         # 6. 주문 실행
+        reserve_order = bool((signal.strategy_context or {}).get("reserve_order"))
+        if reserve_order:
+            return self._execute_reservation_order(
+                signal=signal,
+                ord_dvsn=ord_dvsn,
+                ord_unpr=ord_unpr,
+                ord_qty=ord_qty,
+            )
+
         return self._execute_order(
             signal=signal,
             ord_dvsn=ord_dvsn,
@@ -240,5 +250,57 @@ class OrderExecutor:
 
         except Exception as e:
             logging.error(f"주문 실행 에러: {e}")
+            return pd.DataFrame()
+
+    def _execute_reservation_order(
+        self,
+        signal: Signal,
+        ord_dvsn: str,
+        ord_unpr: str,
+        ord_qty: int,
+    ) -> pd.DataFrame:
+        """장전 예약주문 실행"""
+        try:
+            if self.env_dv not in ("real", "prod"):
+                logging.error("예약주문은 현재 모드에서 지원되지 않습니다. 실전투자 계좌에서만 시도해주세요.")
+                return pd.DataFrame()
+
+            trenv = ka.getTREnv()
+            tr_id = "CTSC0008U"
+            action_code = "02" if signal.action == Action.BUY else "01"
+            reserve_end_date = (datetime.now() + timedelta(days=1)).strftime("%Y%m%d")
+
+            params = {
+                "CANO": trenv.my_acct,
+                "ACNT_PRDT_CD": trenv.my_prod,
+                "PDNO": signal.stock_code,
+                "ORD_QTY": str(ord_qty),
+                "ORD_UNPR": str(int(ord_unpr)),
+                "SLL_BUY_DVSN_CD": action_code,
+                "ORD_DVSN_CD": ord_dvsn,
+                "ORD_OBJT_CBLC_DVSN_CD": "10",
+                "RSVN_ORD_END_DT": reserve_end_date,
+            }
+
+            logging.info(
+                f"예약주문 실행: {signal.stock_name} {signal.action.value.upper()} "
+                f"{ord_qty}주 @ {ord_unpr}원 (ord_dvsn={ord_dvsn}, end={reserve_end_date})"
+            )
+
+            res = ka._url_fetch(
+                "/uapi/domestic-stock/v1/trading/order-resv",
+                tr_id, "", params, postFlag=True
+            )
+
+            if res.isOK():
+                result = pd.DataFrame([res.getBody().output])
+                logging.info(f"예약주문 성공: {result.to_dict()}")
+                return result
+
+            logging.error(f"예약주문 실패: {signal.stock_name}")
+            res.printError("/uapi/domestic-stock/v1/trading/order-resv")
+            return pd.DataFrame()
+        except Exception as e:
+            logging.error(f"예약주문 실행 에러: {e}")
             return pd.DataFrame()
 

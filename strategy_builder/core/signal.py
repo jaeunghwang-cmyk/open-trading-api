@@ -10,7 +10,7 @@ Applied Skills: skills/investment-strategy-framework.md
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Any, Dict, Optional
 
 
 class Action(Enum):
@@ -33,9 +33,10 @@ class Signal:
         action: 매매 행동 (BUY/SELL/HOLD)
         strength: 시그널 강도 (0.0 ~ 1.0)
         reason: 시그널 발생 사유
-        timestamp: 시그널 생성 시각
-        target_price: 목표가격 (지정가 주문용, None이면 시장가)
-        quantity: 주문 수량 (None이면 자동 계산)
+    timestamp: 시그널 생성 시각
+    target_price: 목표가격 (지정가 주문용, None이면 시장가)
+    quantity: 주문 수량 (None이면 자동 계산)
+        strategy_context: 주문 후속 처리를 위한 전략 문맥
 
     시그널 강도 기준 (skill):
         0.8 ~ 1.0: 강한 시그널 → 시장가 주문
@@ -50,6 +51,7 @@ class Signal:
     timestamp: datetime = field(default_factory=datetime.now)
     target_price: Optional[int] = None
     quantity: Optional[int] = None
+    strategy_context: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
         """생성 시 유효성 검증"""

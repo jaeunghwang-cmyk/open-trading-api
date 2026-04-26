@@ -13,6 +13,7 @@ export interface OrderRequest {
   price?: number;
   quantity: number;
   signal_reason?: string;
+  strategy_context?: Record<string, unknown>;
 }
 
 export interface OrderResult {

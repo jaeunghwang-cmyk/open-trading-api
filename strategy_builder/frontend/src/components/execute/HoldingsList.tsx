@@ -53,6 +53,7 @@ export function HoldingsList({
           org_no: order.org_no ?? "",
           stock_code: order.stock_code,
           qty: order.unfilled_qty,
+          is_reservation: order.is_reservation ?? false,
         });
       } finally {
         setCancellingOrderNo(null);
@@ -285,6 +286,7 @@ interface PendingOrderItemProps {
 
 function PendingOrderItem({ order, onCancel, isCancelling }: PendingOrderItemProps) {
   const isBuy = order.order_type.includes("매수") || order.order_type === "BUY";
+  const isReservation = order.is_reservation || order.order_type.includes("예약");
 
   return (
     <div className="flex items-center gap-4 p-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
@@ -298,8 +300,8 @@ function PendingOrderItem({ order, onCancel, isCancelling }: PendingOrderItemPro
                 ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
                 : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
             )}
-          >
-            {isBuy ? "매수" : "매도"}
+            >
+            {isReservation ? (isBuy ? "예약매수" : "예약매도") : (isBuy ? "매수" : "매도")}
           </span>
           <span className="font-medium truncate">{order.stock_name}</span>
           <span className="text-xs text-slate-400 font-mono">

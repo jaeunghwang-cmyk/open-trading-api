@@ -10,14 +10,26 @@ Account Information and Pending Orders API:
 
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException
+import pandas as pd
 from pydantic import BaseModel
 
+from core.execution_tracker import get_execution_snapshot, record_order_submission
 from core.order_executor import OrderExecutor
+from core.cycle_reentry_state import set_state
 from core.signal import Action, Signal
-from core.data_fetcher import get_deposit, get_holdings, get_pending_orders, cancel_order, clear_balance_cache
+from core.data_fetcher import (
+    get_deposit,
+    get_holdings,
+    get_pending_orders,
+    get_reserved_orders,
+    cancel_order,
+    cancel_reserved_order,
+    clear_balance_cache,
+)
+from core.telegram_notifier import is_configured as is_telegram_configured, send_message as send_telegram_message
 from backend import is_authenticated, get_current_mode
 
 logging.basicConfig(level=logging.INFO)
@@ -111,9 +123,10 @@ class OrderRequest(BaseModel):
     stock_name: str
     action: str  # "BUY" or "SELL"
     order_type: str  # "limit" or "market"
-    price: int
+    price: Optional[int] = None
     quantity: int
     signal_reason: str
+    strategy_context: Optional[Dict[str, Any]] = None
 
 
 class LogEntry(BaseModel):
@@ -131,8 +144,7 @@ class OrderResponse(BaseModel):
     logs: list[LogEntry] = []
 
 
-@router.post("/execute", response_model=OrderResponse)
-async def execute_order(request: OrderRequest):
+async def execute_order_internal(request: OrderRequest) -> OrderResponse:
     """
     주문 실행
 
@@ -198,6 +210,7 @@ async def execute_order(request: OrderRequest):
         # 3. Signal 객체 생성
         # 지정가 주문: strength < 0.8 → order_executor가 target_price 사용
         # 시장가 주문: strength >= 0.8 → order_executor가 시장가 사용
+        reserve_order = bool((request.strategy_context or {}).get("reserve_order"))
         is_limit_order = request.order_type == "limit"
         signal = Signal(
             stock_code=request.stock_code,
@@ -206,11 +219,12 @@ async def execute_order(request: OrderRequest):
             strength=0.7 if is_limit_order else 1.0,  # 지정가면 0.7, 시장가면 1.0
             reason=request.signal_reason,
             target_price=request.price if is_limit_order else None,
-            quantity=request.quantity
+            quantity=request.quantity,
+            strategy_context=request.strategy_context,
         )
 
         # 주문 유형 로깅
-        order_type_display = "지정가" if is_limit_order else "시장가"
+        order_type_display = "예약지정가" if reserve_order else ("지정가" if is_limit_order else "시장가")
         price_display = f"{request.price:,}원" if is_limit_order else "시장가"
         add_log("info", f"주문 실행 중: {request.action} {request.quantity}주 @ {price_display} ({order_type_display})")
         logging.info(f"[주문] order_type={request.order_type}, price={request.price}, strength={signal.strength}, target_price={signal.target_price}")
@@ -239,18 +253,41 @@ async def execute_order(request: OrderRequest):
                 logs=logs
             )
 
-        # 주문 성공 (POST API 응답은 대문자 필드명: ODNO, ORD_TMD, KRX_FWDG_ORD_ORGNO)
-        order_id = result.iloc[0].get("ODNO", "")
-        order_time = result.iloc[0].get("ORD_TMD", datetime.now().strftime("%H%M%S"))
-        order_org_no = result.iloc[0].get("KRX_FWDG_ORD_ORGNO", "")
+        # 주문 성공 (일반주문: ODNO, 예약주문: RSVN_ORD_SEQ)
+        result_row = result.iloc[0]
+        order_id = (
+            result_row.get("ODNO", "")
+            or result_row.get("odno", "")
+            or result_row.get("RSVN_ORD_SEQ", "")
+            or result_row.get("rsvn_ord_seq", "")
+        )
+        order_time = (
+            result_row.get("ORD_TMD", "")
+            or result_row.get("ord_tmd", "")
+            or result_row.get("RSVN_ORD_TMD", "")
+            or datetime.now().strftime("%H%M%S")
+        )
+        order_org_no = result_row.get("KRX_FWDG_ORD_ORGNO", "") or result_row.get("krx_fwdg_ord_orgno", "")
 
         order_data = {
             "order_id": order_id,
             "status": "submitted",
-            "message": "주문이 접수되었습니다"
+            "message": "예약주문이 접수되었습니다" if reserve_order else "주문이 접수되었습니다"
         }
 
         add_log("success", f"주문 실행 성공 (주문번호: {order_id})")
+        _update_cycle_reentry_state(request)
+        record_order_submission(
+            order_no=str(order_id),
+            stock_code=request.stock_code,
+            stock_name=request.stock_name,
+            action=request.action,
+            order_type="reserve" if reserve_order else request.order_type,
+            quantity=request.quantity,
+            price=int(request.price or 0),
+            signal_reason=request.signal_reason,
+            strategy_context=request.strategy_context,
+        )
 
         # 미체결 캐시에 직접 추가 (Optimistic Update)
         global _pending_cache, _pending_cache_time, _optimistic_order_nos, _optimistic_added_at
@@ -262,12 +299,13 @@ async def execute_order(request: OrderRequest):
             org_no=str(order_org_no),
             stock_code=request.stock_code,
             stock_name=request.stock_name,
-            order_type="매수" if request.action == "BUY" else "매도",
+            order_type=f"예약{'매수' if request.action == 'BUY' else '매도'}" if reserve_order else ("매수" if request.action == "BUY" else "매도"),
             order_qty=request.quantity,
-            order_price=request.price,
+            order_price=request.price or 0,
             filled_qty=0,
             unfilled_qty=request.quantity,
-            order_time=order_time
+            order_time=order_time,
+            is_reservation=reserve_order,
         )
         _pending_cache.append(new_pending)
         _pending_cache_time = datetime.now()
@@ -280,7 +318,7 @@ async def execute_order(request: OrderRequest):
 
         return OrderResponse(
             status="success",
-            message="주문이 접수되었습니다",
+            message="예약주문이 접수되었습니다" if reserve_order else "주문이 접수되었습니다",
             data=order_data,
             logs=logs
         )
@@ -294,6 +332,41 @@ async def execute_order(request: OrderRequest):
             message=str(e),
             logs=logs
         )
+
+
+@router.post("/execute", response_model=OrderResponse)
+async def execute_order(request: OrderRequest):
+    return await execute_order_internal(request)
+
+
+def _update_cycle_reentry_state(request: OrderRequest) -> None:
+    context = request.strategy_context or {}
+    if context.get("mode") != "cycle_reentry":
+        return
+
+    strategy_key = str(context.get("strategy_key") or "").strip()
+    if not strategy_key:
+        return
+
+    if request.action == "SELL":
+        return
+
+    reference_price = request.price
+    if not reference_price:
+        raw_price = context.get("reference_price")
+        if isinstance(raw_price, (int, float)):
+            reference_price = int(raw_price)
+
+    entry_count = int(context.get("step_index") or 1)
+    set_state(
+        strategy_key,
+        request.stock_code,
+        {
+            "last_entry_price": int(reference_price or 0),
+            "entry_count": entry_count,
+            "updated_at": datetime.now().isoformat(),
+        },
+    )
 
 
 # ============================================
@@ -324,6 +397,7 @@ class PendingOrderItem(BaseModel):
     filled_qty: int
     unfilled_qty: int
     order_time: str
+    is_reservation: bool = False
 
 
 class PendingOrdersResponse(BaseModel):
@@ -333,12 +407,59 @@ class PendingOrdersResponse(BaseModel):
     total_count: int
 
 
+class ExecutionHistoryItem(BaseModel):
+    event_id: str
+    event_type: str
+    timestamp: str
+    order_no: str
+    stock_code: str
+    stock_name: str
+    action: str
+    order_type: str
+    quantity: int
+    price: int
+    step_index: int | None = None
+    strategy_key: str | None = None
+    avg_price_after: int | None = None
+    balance_after: int | None = None
+    note: str = ""
+
+
+class CycleStatusItem(BaseModel):
+    strategy_key: str
+    stock_code: str
+    stock_name: str
+    entry_count: int
+    last_entry_price: int
+    quantity: int
+    avg_price: int
+    last_buy_price: int
+    last_buy_quantity: int
+    last_sell_price: int
+    last_sell_quantity: int
+    updated_at: str | None = None
+
+
+class ExecutionHistoryResponse(BaseModel):
+    status: str
+    history: list[ExecutionHistoryItem]
+    cycle_statuses: list[CycleStatusItem]
+    last_synced_at: str | None = None
+
+
+class TelegramStatusResponse(BaseModel):
+    status: str
+    configured: bool
+    message: str = ""
+
+
 class CancelOrderRequest(BaseModel):
     """주문 취소 요청"""
     order_no: str
     org_no: str = ""
     stock_code: str
     qty: int
+    is_reservation: bool = False
 
 
 class CancelOrderResponse(BaseModel):
@@ -427,9 +548,10 @@ async def get_pending_orders_api():
 
     try:
         df, api_success = get_pending_orders(env_dv)
+        reserved_df, reserved_success = get_reserved_orders(env_dv)
 
         # API 실패 시 (rate limit 등) 이전 캐시 반환 + TTL 갱신
-        if not api_success:
+        if not api_success and not reserved_success:
             logging.info("미체결 조회 API 실패 - 이전 캐시 반환")
             if _pending_cache is not None:
                 _pending_cache_time = now
@@ -442,8 +564,15 @@ async def get_pending_orders_api():
         # API 결과 파싱
         api_orders: list[PendingOrderItem] = []
         api_order_nos: set[str] = set()
-        if not df.empty:
-            for _, row in df.iterrows():
+        merged_source = []
+        if api_success and not df.empty:
+            merged_source.append(df)
+        if reserved_success and not reserved_df.empty:
+            merged_source.append(reserved_df)
+
+        if merged_source:
+            merged_df = pd.concat(merged_source, ignore_index=True)
+            for _, row in merged_df.iterrows():
                 ono = str(row.get("order_no", ""))
                 if not ono or ono in api_order_nos:
                     continue
@@ -458,7 +587,8 @@ async def get_pending_orders_api():
                     order_price=int(row.get("order_price", 0)),
                     filled_qty=int(row.get("filled_qty", 0)),
                     unfilled_qty=int(row.get("unfilled_qty", 0)),
-                    order_time=str(row.get("order_time", ""))
+                    order_time=str(row.get("order_time", "")),
+                    is_reservation=bool(row.get("is_reservation", False)),
                 ))
 
         # Optimistic Grace Period: API에 아직 안 나타난 최근 주문 보존
@@ -500,6 +630,54 @@ async def get_pending_orders_api():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/execution-history", response_model=ExecutionHistoryResponse)
+async def get_execution_history():
+    """주문/체결 이력 및 반복 분할매수 상태 조회"""
+    if not is_authenticated():
+        raise HTTPException(status_code=401, detail="인증이 필요합니다")
+
+    snapshot = get_execution_snapshot(env_dv=get_current_mode(), sync=True)
+    return ExecutionHistoryResponse(
+        status="success",
+        history=[ExecutionHistoryItem(**item) for item in snapshot.get("history", [])],
+        cycle_statuses=[CycleStatusItem(**item) for item in snapshot.get("cycle_statuses", [])],
+        last_synced_at=snapshot.get("last_synced_at"),
+    )
+
+
+@router.get("/telegram/status", response_model=TelegramStatusResponse)
+async def get_telegram_status():
+    """텔레그램 알림 설정 상태 확인"""
+    configured = is_telegram_configured()
+    return TelegramStatusResponse(
+        status="success",
+        configured=configured,
+        message="configured" if configured else "missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID",
+    )
+
+
+@router.post("/telegram/test", response_model=TelegramStatusResponse)
+async def send_telegram_test():
+    """텔레그램 테스트 메시지 전송"""
+    if not is_authenticated():
+        raise HTTPException(status_code=401, detail="인증이 필요합니다")
+
+    configured = is_telegram_configured()
+    if not configured:
+        return TelegramStatusResponse(
+            status="error",
+            configured=False,
+            message="missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID",
+        )
+
+    sent = send_telegram_message("strategy_builder 백엔드 테스트 메시지")
+    return TelegramStatusResponse(
+        status="success" if sent else "error",
+        configured=True,
+        message="sent" if sent else "failed to send telegram message",
+    )
+
+
 @router.post("/cancel", response_model=CancelOrderResponse)
 async def cancel_order_api(request: CancelOrderRequest):
     """주문 취소
@@ -518,21 +696,33 @@ async def cancel_order_api(request: CancelOrderRequest):
     """
     if not is_authenticated():
         raise HTTPException(status_code=401, detail="인증이 필요합니다")
-    
+
+    global _pending_cache, _pending_cache_time, _optimistic_order_nos
     env_dv = get_current_mode()
     
     try:
         logging.info(f"취소 요청 수신: order_no={request.order_no}, org_no='{request.org_no}'")
-        result = cancel_order(
-            order_no=request.order_no,
-            stock_code=request.stock_code,
-            qty=request.qty,
-            org_no=request.org_no,
-            env_dv=env_dv
-        )
+        is_reservation = request.is_reservation
+        if not is_reservation and _pending_cache:
+            matched = next((item for item in _pending_cache if item.order_no == request.order_no), None)
+            if matched is not None:
+                is_reservation = bool(getattr(matched, "is_reservation", False))
+
+        if is_reservation:
+            result = cancel_reserved_order(
+                rsvn_ord_seq=request.order_no,
+                env_dv=env_dv,
+            )
+        else:
+            result = cancel_order(
+                order_no=request.order_no,
+                stock_code=request.stock_code,
+                qty=request.qty,
+                org_no=request.org_no,
+                env_dv=env_dv
+            )
 
         # 캐시 업데이트
-        global _pending_cache, _pending_cache_time, _optimistic_order_nos
         if result.get("success"):
             _optimistic_order_nos.discard(request.order_no)
             if _pending_cache is not None:

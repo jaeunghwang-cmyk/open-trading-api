@@ -91,6 +91,39 @@ class RiskConfig(BaseModel):
         return result
 
 
+class EntrySplitStepConfig(BaseModel):
+    percent: float = Field(..., description="진입 비중 %")
+    trigger: Literal["signal", "additional_drop_pct"] = Field(default="signal")
+    drop_percent: Optional[float] = Field(default=None, description="이전 매수가 대비 추가 하락 %")
+
+
+class ExitSplitStepConfig(BaseModel):
+    percent: float = Field(..., description="청산 비중 %")
+    trigger: Literal[
+        "exit_signal",
+        "take_profit_pct",
+        "stop_loss_pct",
+        "trailing_stop_pct",
+        "hold_days",
+    ] = Field(default="exit_signal")
+    target_percent: Optional[float] = Field(default=None, description="목표 퍼센트")
+    hold_days: Optional[int] = Field(default=None, description="보유일수")
+
+
+class CycleReentryConfig(BaseModel):
+    enabled: bool = Field(default=False)
+    base_amount: float = Field(default=5_000_000, gt=0)
+    split_count: int = Field(default=5, ge=1, le=20)
+    drop_percent: float = Field(default=5.0, gt=0)
+    take_profit_percent: float = Field(default=3.0, gt=0)
+
+
+class PositionManagementConfig(BaseModel):
+    entry_splits: List[EntrySplitStepConfig] = Field(default_factory=list)
+    exit_splits: List[ExitSplitStepConfig] = Field(default_factory=list)
+    cycle_reentry: Optional[CycleReentryConfig] = Field(default=None)
+
+
 class CandlestickConfig(BaseModel):
     """캔들스틱 패턴 설정"""
     id: str = Field(..., description="패턴 ID (doji, hammer, engulfing 등)")
@@ -262,6 +295,10 @@ class KisStrategyFile(BaseModel):
         default=None,
         description="리스크 관리 설정"
     )
+    position_management: Optional[PositionManagementConfig] = Field(
+        default=None,
+        description="분할 진입/청산 설정"
+    )
 
     @field_validator("risk", mode="before")
     @classmethod
@@ -329,6 +366,7 @@ class KisStrategyFile(BaseModel):
             exit=exit,
             params=self.strategy.params,
             risk_management=self.risk.to_risk_management_dict(),
+            position_management=self.position_management.model_dump(exclude_none=True) if self.position_management else {},
             metadata={
                 "author": self.metadata.author,
                 "tags": self.metadata.tags,
@@ -402,6 +440,11 @@ class KisStrategyFile(BaseModel):
             risk.take_profit = {"enabled": True, "percent": rm["take_profit_pct"]}
         if rm.get("trailing_stop_pct"):
             risk.trailing_stop = {"enabled": True, "percent": rm["trailing_stop_pct"]}
+
+        position_management = None
+        pm = getattr(definition, "position_management", {}) or {}
+        if pm:
+            position_management = PositionManagementConfig.model_validate(pm)
         
         return cls(
             version=definition.version,
@@ -426,4 +469,5 @@ class KisStrategyFile(BaseModel):
                 params=definition.params,
             ),
             risk=risk,
+            position_management=position_management,
         )

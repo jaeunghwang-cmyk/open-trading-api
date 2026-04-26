@@ -321,6 +321,42 @@ class RiskSchema(BaseModel):
         )
 
 
+class EntrySplitStepSchema(BaseModel):
+    percent: float = Field(..., gt=0, le=100)
+    trigger: Literal["signal", "additional_drop_pct"] = Field(default="signal")
+    drop_percent: Optional[float] = Field(default=None, ge=0, le=100)
+
+
+class ExitSplitStepSchema(BaseModel):
+    percent: float = Field(..., gt=0, le=100)
+    trigger: Literal[
+        "exit_signal",
+        "take_profit_pct",
+        "stop_loss_pct",
+        "trailing_stop_pct",
+        "hold_days",
+    ] = Field(default="exit_signal")
+    target_percent: Optional[float] = Field(default=None, ge=0, le=100)
+    hold_days: Optional[int] = Field(default=None, ge=1)
+
+
+class CycleReentrySchema(BaseModel):
+    enabled: bool = Field(default=False)
+    base_amount: float = Field(default=5_000_000, gt=0)
+    split_count: int = Field(default=5, ge=1, le=20)
+    drop_percent: float = Field(default=5.0, gt=0)
+    take_profit_percent: float = Field(default=3.0, gt=0)
+
+
+class PositionManagementSchema(BaseModel):
+    entry_splits: List[EntrySplitStepSchema] = Field(default_factory=list)
+    exit_splits: List[ExitSplitStepSchema] = Field(default_factory=list)
+    cycle_reentry: Optional[CycleReentrySchema] = Field(default=None)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return self.model_dump(exclude_none=True)
+
+
 class StrategySchema(BaseModel):
     """전략 스키마 - Single Source of Truth
 
@@ -349,6 +385,7 @@ class StrategySchema(BaseModel):
     entry: Union[ConditionSchema, CompositeConditionSchema] = Field(..., description="진입 조건")
     exit: Union[ConditionSchema, CompositeConditionSchema] = Field(..., description="청산 조건")
     risk: Optional[RiskSchema] = Field(default=None, description="리스크 관리")
+    position_management: Optional[PositionManagementSchema] = Field(default=None, description="분할 진입/청산")
     params: Dict[str, Dict[str, Any]] = Field(default_factory=dict, description="파라미터 정의")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="메타데이터")
     version: str = Field(default="1.0", description="버전")
@@ -493,6 +530,7 @@ class StrategySchema(BaseModel):
             "entry": condition_to_dict(self.entry),
             "exit": condition_to_dict(self.exit),
             "risk_management": self.risk.to_dict() if self.risk else {},
+            "position_management": self.position_management.to_dict() if self.position_management else {},
             "params": self.params,
             "metadata": self.metadata,
             "version": self.version,

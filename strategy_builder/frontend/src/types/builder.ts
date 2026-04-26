@@ -112,6 +112,48 @@ export interface RiskManagement {
   };
 }
 
+export type EntrySplitTrigger = "signal" | "additional_drop_pct";
+
+export interface EntrySplitStep {
+  id: string;
+  enabled: boolean;
+  allocationPercent: number;
+  trigger: EntrySplitTrigger;
+  dropPercent?: number;
+}
+
+export type ExitSplitTrigger =
+  | "exit_signal"
+  | "take_profit_pct"
+  | "stop_loss_pct"
+  | "trailing_stop_pct"
+  | "hold_days";
+
+export interface ExitSplitStep {
+  id: string;
+  enabled: boolean;
+  allocationPercent: number;
+  trigger: ExitSplitTrigger;
+  targetPercent?: number;
+  holdDays?: number;
+}
+
+export interface CycleReentryConfig {
+  enabled: boolean;
+  baseAmount: number;
+  splitCount: number;
+  dropPercent: number;
+  takeProfitPercent: number;
+}
+
+export interface PositionManagement {
+  splitEntriesEnabled: boolean;
+  splitExitsEnabled: boolean;
+  entrySteps: EntrySplitStep[];
+  exitSteps: ExitSplitStep[];
+  cycleReentry: CycleReentryConfig;
+}
+
 export interface BuilderMetadata {
   id: string;
   name: string;
@@ -127,6 +169,7 @@ export interface BuilderState {
   entry: BuilderConditionGroup;
   exit: BuilderConditionGroup;
   risk: RiskManagement;
+  positionManagement: PositionManagement;
 }
 
 // ============================================================
@@ -181,6 +224,33 @@ export interface YamlRisk {
   trailing_stop?: { enabled: boolean; percent: number };
 }
 
+export interface YamlEntrySplitStep {
+  percent: number;
+  trigger: EntrySplitTrigger;
+  drop_percent?: number;
+}
+
+export interface YamlExitSplitStep {
+  percent: number;
+  trigger: ExitSplitTrigger;
+  target_percent?: number;
+  hold_days?: number;
+}
+
+export interface YamlCycleReentry {
+  enabled: boolean;
+  base_amount: number;
+  split_count: number;
+  drop_percent: number;
+  take_profit_percent: number;
+}
+
+export interface YamlPositionManagement {
+  entry_splits?: YamlEntrySplitStep[];
+  exit_splits?: YamlExitSplitStep[];
+  cycle_reentry?: YamlCycleReentry;
+}
+
 export interface YamlStrategy {
   version: string;
   metadata: {
@@ -198,6 +268,7 @@ export interface YamlStrategy {
     exit: YamlConditionGroup;
   };
   risk: YamlRisk;
+  position_management?: YamlPositionManagement;
 }
 
 // ============================================================

@@ -11,6 +11,8 @@ export interface Signal {
   strength: number;
   reason: string;
   target_price?: number;
+  quantity?: number;
+  strategy_context?: Record<string, unknown>;
 }
 
 // Alias for API response
@@ -21,6 +23,8 @@ export interface SignalResult {
   strength: number;
   reason: string;
   target_price?: number;
+  quantity?: number;
+  strategy_context?: Record<string, unknown>;
 }
 
 import type { BuilderState } from "./builder";
@@ -49,6 +53,7 @@ export interface ExecuteRequest {
   stocks: string[];
   params: Record<string, number>;
   builder_state?: BuilderState;  // Local strategy builder state
+  auto_trade?: boolean;
 }
 
 export interface ExecuteResponse {

@@ -10,16 +10,20 @@ import {
   ExecutionLog,
   StockInput,
   OrderResultModal,
+  CycleExecutionPanel,
 } from "@/components/execute";
 import { useAuth, useAccount, useStrategyExecutor, useOrder } from "@/hooks";
 import {
   getCurrentPrice,
   getBuyableAmount,
   getPendingOrders,
+  getExecutionHistory,
   cancelOrder,
   clearAccountCache,
   type PriceData,
   type PendingOrder,
+  type ExecutionHistoryItem,
+  type CycleStatusItem,
   type CancelOrderRequest,
 } from "@/lib/api";
 import type { SignalResult } from "@/types/signal";
@@ -63,6 +67,20 @@ export default function ExecutePage() {
 
   // Pending orders state
   const [pendingOrders, setPendingOrders] = useState<PendingOrder[]>([]);
+  const [executionHistory, setExecutionHistory] = useState<ExecutionHistoryItem[]>([]);
+  const [cycleStatuses, setCycleStatuses] = useState<CycleStatusItem[]>([]);
+  const [executionSyncing, setExecutionSyncing] = useState(false);
+  const [autoTradeEnabled, setAutoTradeEnabled] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setAutoTradeEnabled(localStorage.getItem("kis_auto_trade_enabled") === "true");
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem("kis_auto_trade_enabled", String(autoTradeEnabled));
+  }, [autoTradeEnabled]);
 
   // Fetch holdings, balance, and pending orders when authenticated
   // 순차 호출: 모의투자 모드의 초당 요청 제한 준수
@@ -71,6 +89,7 @@ export default function ExecutePage() {
       await fetchHoldings();
       await fetchBalance();
       await fetchPendingOrders();
+      await fetchExecutionHistory();
     };
     if (authStatus.authenticated) {
       fetchSequentially();
@@ -89,12 +108,38 @@ export default function ExecutePage() {
     }
   }, []);
 
+  const fetchExecutionHistory = useCallback(async () => {
+    setExecutionSyncing(true);
+    try {
+      const response = await getExecutionHistory();
+      if (response.status === "success") {
+        setExecutionHistory(response.history || []);
+        setCycleStatuses(response.cycle_statuses || []);
+      }
+    } catch (error) {
+      console.error("Failed to fetch execution history:", error);
+    } finally {
+      setExecutionSyncing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!authStatus.authenticated) {
+      return;
+    }
+    const timer = setInterval(() => {
+      fetchExecutionHistory();
+    }, 10000);
+    return () => clearInterval(timer);
+  }, [authStatus.authenticated, fetchExecutionHistory]);
+
   const handleRefresh = useCallback(async () => {
     resetThrottle();
     await fetchHoldings();
     await fetchBalance();
     await fetchPendingOrders();
-  }, [resetThrottle, fetchHoldings, fetchBalance, fetchPendingOrders]);
+    await fetchExecutionHistory();
+  }, [resetThrottle, fetchHoldings, fetchBalance, fetchPendingOrders, fetchExecutionHistory]);
 
   const handleCancelOrder = useCallback(async (request: CancelOrderRequest) => {
     try {
@@ -116,8 +161,67 @@ export default function ExecutePage() {
       alert("종목을 입력해주세요");
       return;
     }
-    await execute(stocks);
+    const results = await execute(stocks, autoTradeEnabled);
+    if (autoTradeEnabled && results.length > 0) {
+      await executeSignalsImmediately(results);
+    }
   };
+
+  const buildOrderRequestForSignal = useCallback(async (signal: SignalResult): Promise<OrderRequest | null> => {
+    if (signal.action !== "BUY" && signal.action !== "SELL") {
+      return null;
+    }
+
+    let currentPrice = signal.target_price ?? 0;
+    try {
+      const priceResponse = await getCurrentPrice(signal.code, authStatus.mode);
+      if (priceResponse.status === "success" && priceResponse.data?.price) {
+        currentPrice = priceResponse.data.price;
+      }
+    } catch {
+      // Keep fallback price
+    }
+
+    const quantity =
+      signal.quantity ??
+      (signal.action === "SELL"
+        ? (holdings.find((h) => h.stock_code === signal.code)?.quantity ?? 0)
+        : 1);
+
+    if (!quantity || quantity <= 0) {
+      return null;
+    }
+
+    const reserveOrder = Boolean(signal.strategy_context?.reserve_order);
+    const orderType = signal.target_price || reserveOrder ? "limit" : "market";
+
+    return {
+      stock_code: signal.code,
+      stock_name: signal.name,
+      action: signal.action,
+      order_type: orderType,
+      price: signal.target_price ?? currentPrice,
+      quantity,
+      signal_reason: signal.reason,
+      strategy_context: signal.strategy_context,
+    };
+  }, [authStatus.mode, holdings]);
+
+  const executeSignalsImmediately = useCallback(async (signalsToExecute: SignalResult[]) => {
+    for (const signal of signalsToExecute) {
+      if (signal.action !== "BUY" && signal.action !== "SELL") {
+        continue;
+      }
+      const request = await buildOrderRequestForSignal(signal);
+      if (!request) {
+        continue;
+      }
+      await executeOrder(request);
+    }
+    await clearAccountCache();
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await handleRefresh();
+  }, [buildOrderRequestForSignal, executeOrder, handleRefresh]);
 
   const handleSignalSelect = async (signal: SignalResult) => {
     setSelectedSignal(signal);
@@ -259,6 +363,16 @@ export default function ExecutePage() {
               )}
             </button>
 
+            <label className="flex items-center justify-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+              <input
+                type="checkbox"
+                checked={autoTradeEnabled}
+                onChange={(e) => setAutoTradeEnabled(e.target.checked)}
+                className="rounded border-slate-300 text-primary focus:ring-primary"
+              />
+              자동매매
+            </label>
+
             {strategyError && (
               <p className="text-caption text-red-500 text-center" role="alert">{strategyError}</p>
             )}
@@ -279,6 +393,12 @@ export default function ExecutePage() {
             {logs.length > 0 && (
               <ExecutionLog logs={logs} maxHeight="300px" />
             )}
+
+            <CycleExecutionPanel
+              statuses={cycleStatuses}
+              history={executionHistory}
+              isLoading={executionSyncing}
+            />
           </div>
 
           {/* Right Panel - Holdings */}

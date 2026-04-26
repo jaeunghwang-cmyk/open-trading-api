@@ -634,6 +634,109 @@ def get_pending_orders(env_dv: str = "real") -> tuple[pd.DataFrame, bool]:
         return pd.DataFrame(), False
 
 
+def get_reserved_orders(env_dv: str = "real") -> tuple[pd.DataFrame, bool]:
+    """예약주문 목록 조회"""
+    if env_dv not in ("real", "prod"):
+        return pd.DataFrame(), False
+    if not _assert_trenv_ready("예약주문 조회"):
+        return pd.DataFrame(), False
+
+    try:
+        trenv = ka.getTREnv()
+        today = datetime.now().strftime("%Y%m%d")
+        params = {
+            "RSVN_ORD_ORD_DT": today,
+            "RSVN_ORD_END_DT": today,
+            "RSVN_ORD_SEQ": 0,
+            "TMNL_MDIA_KIND_CD": "00",
+            "CANO": trenv.my_acct,
+            "ACNT_PRDT_CD": trenv.my_prod,
+            "PRCS_DVSN_CD": "0",
+            "CNCL_YN": "",
+        }
+        res = ka._url_fetch(
+            "/uapi/domestic-stock/v1/trading/order-resv-ccnl",
+            "CTSC0004R", "", params
+        )
+        if not res.isOK():
+            logging.warning("예약주문 조회 실패")
+            return pd.DataFrame(), False
+
+        output = getattr(res.getBody(), "output", None)
+        df = pd.DataFrame(output)
+        if df.empty:
+            return pd.DataFrame(), True
+
+        def first_existing(row, candidates, default=""):
+            for key in candidates:
+                if key in row and str(row.get(key, "")) != "":
+                    return row.get(key)
+            return default
+
+        mapped_rows = []
+        for _, row in df.iterrows():
+            row_dict = row.to_dict()
+            order_no = str(first_existing(row_dict, ["rsvn_ord_seq", "RSVN_ORD_SEQ", "ord_seq", "ORD_SEQ"], ""))
+            stock_code = str(first_existing(row_dict, ["pdno", "PDNO", "stock_code"], ""))
+            if not order_no or not stock_code:
+                continue
+            action_text = str(first_existing(row_dict, ["sll_buy_dvsn_cd_name", "SLL_BUY_DVSN_CD_NAME", "sll_buy_dvsn_cd"], ""))
+            order_qty = int(float(first_existing(row_dict, ["ord_qty", "ORD_QTY", "rsvn_ord_qty"], 0) or 0))
+            order_price = int(float(first_existing(row_dict, ["ord_unpr", "ORD_UNPR", "order_price"], 0) or 0))
+            mapped_rows.append({
+                "order_no": order_no,
+                "org_no": "",
+                "stock_code": stock_code,
+                "stock_name": str(first_existing(row_dict, ["prdt_name", "PRDT_NAME", "stock_name"], stock_code)),
+                "order_type": f"예약{'매수' if '매수' in action_text or action_text == '02' else '매도'}",
+                "order_qty": order_qty,
+                "order_price": order_price,
+                "filled_qty": 0,
+                "unfilled_qty": order_qty,
+                "order_time": str(first_existing(row_dict, ["ord_tmd", "ORD_TMD", "rsvn_ord_ord_tmd"], "")),
+                "is_reservation": True,
+            })
+
+        return pd.DataFrame(mapped_rows), True
+    except Exception as e:
+        logging.error(f"예약주문 조회 에러: {e}")
+        return pd.DataFrame(), False
+
+
+def cancel_reserved_order(rsvn_ord_seq: str, env_dv: str = "real") -> dict:
+    """예약주문 취소"""
+    if env_dv not in ("real", "prod"):
+        return {"success": False, "order_no": rsvn_ord_seq, "message": "예약주문 취소는 실전투자에서만 지원됩니다"}
+    if not _assert_trenv_ready(f"예약주문 취소 {rsvn_ord_seq}"):
+        return {"success": False, "order_no": rsvn_ord_seq, "message": "재인증이 필요합니다"}
+
+    try:
+        trenv = ka.getTREnv()
+        params = {
+            "CANO": trenv.my_acct,
+            "ACNT_PRDT_CD": trenv.my_prod,
+            "RSVN_ORD_SEQ": str(int(rsvn_ord_seq)),
+        }
+        res = ka._url_fetch(
+            "/uapi/domestic-stock/v1/trading/order-resv-rvsecncl",
+            "CTSC0009U", "", params, postFlag=True
+        )
+        if not res.isOK():
+            body = res.getBody()
+            message = getattr(body, "msg1", None) or "예약주문 취소 실패"
+            return {"success": False, "order_no": rsvn_ord_seq, "message": str(message)}
+
+        output = res.getBody().output
+        return {
+            "success": True,
+            "order_no": output.get("RSVN_ORD_SEQ", rsvn_ord_seq),
+            "message": "예약주문이 취소되었습니다",
+        }
+    except Exception as e:
+        logging.error(f"예약주문 취소 에러 ({rsvn_ord_seq}): {e}")
+        return {"success": False, "order_no": rsvn_ord_seq, "message": str(e)}
+
+
 # =============================================================================
 # 주문 취소
 # =============================================================================

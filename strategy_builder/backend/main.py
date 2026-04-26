@@ -2,6 +2,7 @@
 KIS 전략 빌더 - FastAPI Backend
 """
 
+import asyncio
 import os
 import sys
 
@@ -12,6 +13,8 @@ sys.path.insert(0, project_root)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from backend import get_current_mode, is_authenticated
+from core.execution_tracker import sync_execution_state
 from backend.routers import strategy, auth, market, orders, account, files, symbols
 
 # FastAPI 앱 생성
@@ -38,6 +41,33 @@ app.include_router(orders.router, prefix="/api/orders", tags=["주문"])
 app.include_router(account.router, prefix="/api/account", tags=["계좌"])
 app.include_router(files.router, prefix="/api/files", tags=["파일"])
 app.include_router(symbols.router, prefix="/api/symbols", tags=["종목"])
+
+_execution_sync_task: asyncio.Task | None = None
+async def _execution_sync_loop():
+    while True:
+        try:
+            if is_authenticated():
+                loop = asyncio.get_running_loop()
+                mode = get_current_mode()
+                await loop.run_in_executor(None, lambda: sync_execution_state(env_dv=mode, force=False))
+        except Exception as exc:
+            print(f"[execution-sync] {exc}")
+        await asyncio.sleep(10)
+
+
+@app.on_event("startup")
+async def on_startup():
+    global _execution_sync_task
+    if _execution_sync_task is None:
+        _execution_sync_task = asyncio.create_task(_execution_sync_loop())
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    global _execution_sync_task
+    if _execution_sync_task is not None:
+        _execution_sync_task.cancel()
+        _execution_sync_task = None
 
 
 @app.get("/api/health")

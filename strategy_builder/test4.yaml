@@ -1,0 +1,82 @@
+version: "1.0"
+
+metadata:
+  name: "60일선 과매도 반등 분할매수 전략"
+  description: "60일선 대비 8~10% 하단 구간에서 전일 대비 반등을 확인한 뒤 최대 4회 분할매수하고 평균단가 수익 또는 20일선 회복 시 청산하는 전략"
+  author: "Codex"
+  tags:
+    - mean_reversion
+    - split_entry
+    - rebound
+    - disparity
+
+strategy:
+  id: test4
+  category: reversal
+
+  indicators:
+    - id: sma
+      alias: ma_20
+      params:
+        period: 20
+      output: value
+    - id: sma
+      alias: ma_60
+      params:
+        period: 60
+      output: value
+    - id: change
+      alias: change_1d
+      params: {}
+      output: value
+
+  entry:
+    logic: AND
+    conditions:
+      - indicator: close
+        operator: less_equal
+        compare_to: ma_60
+        compare_scalar: 0.92
+        compare_operation: mul
+      - indicator: close
+        operator: greater_equal
+        compare_to: ma_60
+        compare_scalar: 0.90
+        compare_operation: mul
+      - indicator: change_1d
+        operator: greater_than
+        compare_to: 0
+
+  exit:
+    logic: OR
+    conditions:
+      - indicator: close
+        operator: greater_equal
+        compare_to: ma_20
+
+position_management:
+  entry_splits:
+    - percent: 25
+      trigger: signal
+    - percent: 25
+      trigger: additional_drop_pct
+      drop_percent: 5
+    - percent: 25
+      trigger: additional_drop_pct
+      drop_percent: 10
+    - percent: 25
+      trigger: additional_drop_pct
+      drop_percent: 15
+  exit_splits:
+    - percent: 100
+      trigger: exit_signal
+    - percent: 100
+      trigger: take_profit_pct
+      target_percent: 2.5
+
+# 참고:
+# - "현재가 또는 종가" 중 현재 스키마/백테스터는 일봉 기준 close 조건으로 반영했습니다.
+# - "60일선보다 8~10% 이상 낮음"은 실무적으로 60일선 대비 -8%~-10% 구간으로 해석해
+#   close <= 60일선 x 0.92 and close >= 60일선 x 0.90 로 반영했습니다.
+# - "최대 3~4회"는 더 보수적으로 4회 분할매수로 설정했습니다.
+# - 익절은 요청 범위의 중간값인 +2.5%로 반영했습니다.

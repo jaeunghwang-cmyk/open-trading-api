@@ -28,6 +28,7 @@ import { useStrategyBuilder, INITIAL_STATE } from "@/hooks/useStrategyBuilder";
 import { useLocalStrategies } from "@/hooks/useLocalStrategies";
 import { listStrategies, previewCodeFromState } from "@/lib/api";
 import { parseYamlToBuilderState } from "@/lib/builder/yamlImporter";
+import { PRESET_STRATEGIES } from "@/lib/builder/presets";
 import type { StrategyInfo } from "@/types/signal";
 import type { BuilderState } from "@/types/builder";
 
@@ -67,6 +68,18 @@ export default function BuilderPage() {
   const localStrategies = useLocalStrategies();
   const toast = useToast();
 
+  const fallbackPresetStrategies = useMemo<BackendPresetStrategy[]>(
+    () =>
+      PRESET_STRATEGIES.map((preset) => ({
+        id: preset.id,
+        name: preset.name,
+        description: preset.description,
+        category: preset.category,
+        state: preset.state,
+      })),
+    []
+  );
+
   useEffect(() => {
     async function loadStrategies() {
       try {
@@ -80,15 +93,15 @@ export default function BuilderPage() {
             category: s.category,
             state: s.builder_state as BuilderState,
           }));
-        setPresetStrategies(strategies);
+        setPresetStrategies(strategies.length > 0 ? strategies : fallbackPresetStrategies);
       } catch {
-        // silently fail - strategies will show as empty
+        setPresetStrategies(fallbackPresetStrategies);
       } finally {
         setIsLoadingStrategies(false);
       }
     }
     loadStrategies();
-  }, []);
+  }, [fallbackPresetStrategies]);
 
   // Reset python preview when builder state changes
   useEffect(() => {
@@ -205,19 +218,23 @@ export default function BuilderPage() {
 
   // Step status computation
   const getStepStatus = useCallback((tabId: BuilderTab): "complete" | "warning" | "empty" => {
+    const cycleReentryEnabled = builder.state.positionManagement.cycleReentry.enabled;
     switch (tabId) {
       case "metadata":
         return builder.state.metadata.name.trim() ? "complete" : "empty";
       case "indicators":
-        return builder.state.indicators.length > 0 ? "complete" : "empty";
+        return cycleReentryEnabled || builder.state.indicators.length > 0 ? "complete" : "empty";
       case "entry":
-        return builder.state.entry.conditions.length > 0 ? "complete" : "warning";
+        return cycleReentryEnabled || builder.state.entry.conditions.length > 0 ? "complete" : "warning";
       case "exit":
-        return builder.state.exit.conditions.length > 0 ? "complete" : "warning";
+        return cycleReentryEnabled || builder.state.exit.conditions.length > 0 ? "complete" : "warning";
       case "risk":
         return builder.state.risk.stopLoss.enabled ||
                builder.state.risk.takeProfit.enabled ||
-               builder.state.risk.trailingStop.enabled
+               builder.state.risk.trailingStop.enabled ||
+               builder.state.positionManagement.splitEntriesEnabled ||
+               builder.state.positionManagement.splitExitsEnabled ||
+               builder.state.positionManagement.cycleReentry.enabled
                ? "complete" : "empty";
       default:
         return "empty";
@@ -478,7 +495,19 @@ export default function BuilderPage() {
                 )}
 
                 {builderTab === "risk" && (
-                  <RiskManager risk={builder.state.risk} onChange={builder.setRisk} />
+                  <RiskManager
+                    risk={{ ...builder.state.risk, positionManagement: builder.state.positionManagement }}
+                    onChange={(updates) => {
+                      if (updates.positionManagement) {
+                        builder.setPositionManagement(updates.positionManagement);
+                      }
+                      builder.setRisk({
+                        stopLoss: updates.stopLoss ?? builder.state.risk.stopLoss,
+                        takeProfit: updates.takeProfit ?? builder.state.risk.takeProfit,
+                        trailingStop: updates.trailingStop ?? builder.state.risk.trailingStop,
+                      });
+                    }}
+                  />
                 )}
               </div>
 

@@ -15,9 +15,14 @@ import importlib.util
 import os
 import re
 import tempfile
+from datetime import datetime, time
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
+from core.cycle_reentry_state import clear_state, get_state
+from core.data_fetcher import get_current_price, get_daily_prices, get_pending_orders
+from core.position_manager import PositionManager
+from core.signal import Action, Signal
 from strategy_core.dsl.converter import builder_state_to_dsl
 from strategy_core.dsl.parser import parse_strategy
 from strategy_core.dsl.codegen import StrategyCodeGenerator
@@ -62,6 +67,7 @@ def execute_from_builder_state(
     log: Callable,
     get_stock_name: Callable,
     api_sleep: Callable,
+    env_dv: str = "real",
 ) -> List[Dict]:
     """BuilderState에서 전략 실행 (local_ 전략 및 builder-only 전략)
 
@@ -70,6 +76,24 @@ def execute_from_builder_state(
     """
     log("info", f"빌더 전략: {strategy_name}")
     log("info", f"종목: {', '.join(stocks)}")
+
+    cycle_reentry = (
+        builder_state.get("positionManagement", {})
+        .get("cycleReentry", {})
+        .get("enabled", False)
+    )
+    if cycle_reentry:
+        results = _run_cycle_reentry_on_stocks(
+            builder_state=builder_state,
+            strategy_name=strategy_name,
+            stocks=stocks,
+            log=log,
+            get_stock_name=get_stock_name,
+            api_sleep=api_sleep,
+            env_dv=env_dv,
+        )
+        log("success", "반복 분할매수 사이클 전략 실행 완료")
+        return results
 
     buy_condition, sell_condition = builder_state_to_dsl(builder_state)
 
@@ -195,6 +219,8 @@ def _run_strategy_on_stocks(
                 'strength': signal.strength,
                 'reason': signal.reason,
                 'target_price': getattr(signal, 'target_price', None),
+                'quantity': getattr(signal, 'quantity', None),
+                'strategy_context': getattr(signal, 'strategy_context', None),
             }
             results.append(result)
 
@@ -213,8 +239,320 @@ def _run_strategy_on_stocks(
                 'strength': 0,
                 'reason': str(e),
                 'target_price': None,
+                'quantity': None,
+                'strategy_context': None,
             })
 
         api_sleep()
 
     return results
+
+
+def _run_cycle_reentry_on_stocks(
+    builder_state: Dict[str, Any],
+    strategy_name: str,
+    stocks: List[str],
+    log: Callable,
+    get_stock_name: Callable,
+    api_sleep: Callable,
+    env_dv: str,
+) -> List[Dict]:
+    position_manager = PositionManager(env_dv=env_dv)
+    holdings = position_manager.get_positions(refresh=True)
+    pending_orders, pending_ok = get_pending_orders(env_dv)
+    strategy_key = _get_cycle_strategy_key(builder_state, strategy_name)
+    cycle_config = builder_state.get("positionManagement", {}).get("cycleReentry", {})
+
+    results = []
+    for code in stocks:
+        name = get_stock_name(code)
+        log("info", f"분석 중: {name} ({code})")
+
+        try:
+            signal = _generate_cycle_reentry_signal(
+                stock_code=code,
+                stock_name=name,
+                strategy_key=strategy_key,
+                cycle_config=cycle_config,
+                holdings=holdings,
+                pending_orders=pending_orders if pending_ok else None,
+                env_dv=env_dv,
+            )
+            result = {
+                "code": code,
+                "name": name,
+                "action": signal.action.value.upper(),
+                "strength": signal.strength,
+                "reason": signal.reason,
+                "target_price": getattr(signal, "target_price", None),
+                "quantity": getattr(signal, "quantity", None),
+                "strategy_context": getattr(signal, "strategy_context", None),
+            }
+            results.append(result)
+
+            action_icon = {"BUY": "▲", "SELL": "▼", "HOLD": "─"}
+            action_type = {"BUY": "success", "SELL": "error", "HOLD": "info"}
+            log(
+                action_type.get(result["action"], "info"),
+                f"  {action_icon.get(result['action'], '─')} {result['action']} | "
+                f"수량: {result['quantity'] or 0} | {result['reason']}"
+            )
+        except Exception as e:
+            log("error", f"  오류: {str(e)}")
+            results.append({
+                "code": code,
+                "name": name,
+                "action": "ERROR",
+                "strength": 0,
+                "reason": str(e),
+                "target_price": None,
+                "quantity": None,
+                "strategy_context": None,
+            })
+
+        api_sleep()
+
+    return results
+
+
+def _generate_cycle_reentry_signal(
+    stock_code: str,
+    stock_name: str,
+    strategy_key: str,
+    cycle_config: Dict[str, Any],
+    holdings,
+    pending_orders,
+    env_dv: str,
+) -> Signal:
+    split_count = max(1, int(cycle_config.get("splitCount", 1) or 1))
+    base_amount = float(cycle_config.get("baseAmount", 0) or 0)
+    drop_percent = float(cycle_config.get("dropPercent", 0) or 0)
+    take_profit_percent = float(cycle_config.get("takeProfitPercent", 0) or 0)
+
+    if base_amount <= 0:
+        raise ValueError("반복 분할매수 사이클의 기준금액이 올바르지 않습니다.")
+
+    tranche_amount = base_amount / split_count
+    market_open = _is_kr_market_open()
+    previous_close = _get_previous_close(stock_code, env_dv)
+    current_quote = get_current_price(stock_code, env_dv)
+    current_price = int(current_quote.get("price", 0) or 0)
+
+    if pending_orders is not None and not pending_orders.empty:
+        stock_pending = pending_orders[pending_orders["stock_code"] == stock_code]
+        if not stock_pending.empty:
+            pending_qty = int(stock_pending["unfilled_qty"].sum())
+            return Signal(
+                stock_code=stock_code,
+                stock_name=stock_name,
+                action=Action.HOLD,
+                strength=0.0,
+                reason=f"미체결 주문 {pending_qty}주 대기 중",
+            )
+
+    position = holdings[holdings["stock_code"] == stock_code] if not holdings.empty else holdings
+    is_holding = not position.empty
+
+    if not is_holding:
+        clear_state(strategy_key, stock_code)
+        entry_price = current_price if market_open else previous_close
+        if entry_price <= 0:
+            raise ValueError("진입 기준 가격을 조회하지 못했습니다.")
+        quantity = int(tranche_amount // entry_price)
+        if quantity <= 0:
+            return Signal(
+                stock_code=stock_code,
+                stock_name=stock_name,
+                action=Action.HOLD,
+                strength=0.0,
+                reason=f"1회 매수금액 {int(tranche_amount):,}원으로 1주도 매수할 수 없습니다.",
+            )
+        step_index = 1
+        order_type = "market" if market_open else "limit"
+        reason = (
+            f"장중 1차 진입: 시가 진입 규칙에 따라 시장가 {quantity}주"
+            if market_open
+            else f"장전 1차 진입: 전일 종가 {entry_price:,}원에 {quantity}주 예약"
+        )
+        return _build_cycle_signal(
+            stock_code=stock_code,
+            stock_name=stock_name,
+            action=Action.BUY,
+            quantity=quantity,
+            reason=reason,
+            strategy_key=strategy_key,
+            step_index=step_index,
+            split_count=split_count,
+            base_amount=base_amount,
+            drop_percent=drop_percent,
+            take_profit_percent=take_profit_percent,
+            reference_price=entry_price,
+            order_type=order_type,
+            target_price=None if market_open else entry_price,
+            strength=1.0 if market_open else 0.7,
+        )
+
+    avg_price = int(position.iloc[0].get("avg_price", 0) or 0)
+    holding_qty = int(position.iloc[0].get("quantity", 0) or 0)
+    if holding_qty <= 0 or avg_price <= 0:
+        return Signal(
+            stock_code=stock_code,
+            stock_name=stock_name,
+            action=Action.HOLD,
+            strength=0.0,
+            reason="보유 수량 또는 평단가를 확인하지 못했습니다.",
+        )
+
+    saved_state = get_state(strategy_key, stock_code)
+    last_entry_price = float(saved_state.get("last_entry_price") or avg_price)
+    entry_count = int(saved_state.get("entry_count") or 0)
+    if entry_count <= 0:
+        estimated_count = int(round((avg_price * holding_qty) / tranche_amount)) if tranche_amount > 0 else 1
+        entry_count = min(split_count, max(1, estimated_count))
+
+    target_take_profit = avg_price * (1 + take_profit_percent / 100)
+    if current_price > 0 and current_price >= target_take_profit:
+        exit_price = current_price if market_open else previous_close
+        if exit_price <= 0:
+            exit_price = current_price or avg_price
+        reason = (
+            f"장중 익절: 평단 {avg_price:,}원 대비 +{take_profit_percent:g}% 도달로 전량 매도"
+            if market_open
+            else f"장전 익절: 전일 종가 {exit_price:,}원 기준 전량 매도 예약"
+        )
+        return _build_cycle_signal(
+            stock_code=stock_code,
+            stock_name=stock_name,
+            action=Action.SELL,
+            quantity=holding_qty,
+            reason=reason,
+            strategy_key=strategy_key,
+            step_index=entry_count,
+            split_count=split_count,
+            base_amount=base_amount,
+            drop_percent=drop_percent,
+            take_profit_percent=take_profit_percent,
+            reference_price=exit_price,
+            order_type="market" if market_open else "limit",
+            target_price=None if market_open else exit_price,
+            strength=1.0 if market_open else 0.7,
+        )
+
+    if entry_count >= split_count:
+        return Signal(
+            stock_code=stock_code,
+            stock_name=stock_name,
+            action=Action.HOLD,
+            strength=0.0,
+            reason=f"최대 {split_count}회까지 모두 진입했습니다.",
+        )
+
+    trigger_price = last_entry_price * (1 - drop_percent / 100)
+    if current_price <= 0 or current_price > trigger_price:
+        return Signal(
+            stock_code=stock_code,
+            stock_name=stock_name,
+            action=Action.HOLD,
+            strength=0.0,
+            reason=f"추가매수 대기: 마지막 매수가 {int(last_entry_price):,}원 대비 -{drop_percent:g}% 구간 미도달",
+        )
+
+    entry_price = current_price if market_open else previous_close
+    if entry_price <= 0:
+        raise ValueError("추가매수 기준 가격을 조회하지 못했습니다.")
+    quantity = int(tranche_amount // entry_price)
+    if quantity <= 0:
+        return Signal(
+            stock_code=stock_code,
+            stock_name=stock_name,
+            action=Action.HOLD,
+            strength=0.0,
+            reason=f"1회 매수금액 {int(tranche_amount):,}원으로 추가매수가 불가능합니다.",
+        )
+    next_step = entry_count + 1
+    reason = (
+        f"장중 {next_step}차 추가매수: 마지막 매수가 {int(last_entry_price):,}원 대비 -{drop_percent:g}% 하락"
+        if market_open
+        else f"장전 {next_step}차 추가매수: 전일 종가 {entry_price:,}원에 {quantity}주 예약"
+    )
+    return _build_cycle_signal(
+        stock_code=stock_code,
+        stock_name=stock_name,
+        action=Action.BUY,
+        quantity=quantity,
+        reason=reason,
+        strategy_key=strategy_key,
+        step_index=next_step,
+        split_count=split_count,
+        base_amount=base_amount,
+        drop_percent=drop_percent,
+        take_profit_percent=take_profit_percent,
+        reference_price=entry_price,
+        order_type="market" if market_open else "limit",
+        target_price=None if market_open else entry_price,
+        strength=1.0 if market_open else 0.7,
+    )
+
+
+def _build_cycle_signal(
+    stock_code: str,
+    stock_name: str,
+    action: Action,
+    quantity: int,
+    reason: str,
+    strategy_key: str,
+    step_index: int,
+    split_count: int,
+    base_amount: float,
+    drop_percent: float,
+    take_profit_percent: float,
+    reference_price: int,
+    order_type: str,
+    target_price: int | None,
+    strength: float,
+) -> Signal:
+    return Signal(
+        stock_code=stock_code,
+        stock_name=stock_name,
+        action=action,
+        strength=strength,
+        reason=reason,
+        target_price=target_price,
+        quantity=quantity,
+        strategy_context={
+            "mode": "cycle_reentry",
+            "strategy_key": strategy_key,
+            "step_index": step_index,
+            "split_count": split_count,
+            "base_amount": base_amount,
+            "drop_percent": drop_percent,
+            "take_profit_percent": take_profit_percent,
+            "reference_price": reference_price,
+            "order_type": order_type,
+            "reserve_order": order_type == "limit",
+        },
+    )
+
+
+def _get_cycle_strategy_key(builder_state: Dict[str, Any], strategy_name: str) -> str:
+    metadata = builder_state.get("metadata", {})
+    raw_key = metadata.get("id") or metadata.get("name") or strategy_name
+    return sanitize_strategy_name(str(raw_key))
+
+
+def _get_previous_close(stock_code: str, env_dv: str) -> int:
+    daily_prices = get_daily_prices(stock_code, days=2, env_dv=env_dv)
+    if daily_prices.empty:
+        return 0
+    today = datetime.now().strftime("%Y%m%d")
+    if len(daily_prices) >= 2 and str(daily_prices.iloc[-1].get("date", "")) == today:
+        return int(daily_prices.iloc[-2].get("close", 0) or 0)
+    return int(daily_prices.iloc[-1].get("close", 0) or 0)
+
+
+def _is_kr_market_open(now: datetime | None = None) -> bool:
+    now = now or datetime.now()
+    if now.weekday() >= 5:
+        return False
+    current_time = now.time()
+    return time(9, 0) <= current_time < time(15, 30)

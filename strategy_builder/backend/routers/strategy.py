@@ -68,6 +68,7 @@ class ExecuteRequest(BaseModel):
     stocks: List[str]
     params: Dict[str, Any] = {}
     builder_state: Optional[Dict[str, Any]] = None
+    auto_trade: bool = False
 
 
 class BuildRequest(BaseModel):
@@ -83,6 +84,8 @@ class SignalResult(BaseModel):
     strength: float
     reason: str
     target_price: Optional[int] = None
+    quantity: Optional[int] = None
+    strategy_context: Optional[Dict[str, Any]] = None
 
 
 class LogEntry(BaseModel):
@@ -233,7 +236,7 @@ async def execute_strategy(request: ExecuteRequest):
 
             results = execute_from_builder_state(
                 request.builder_state, strategy_name, stocks,
-                log, get_stock_name, _api_sleep,
+                log, get_stock_name, _api_sleep, current_mode,
             )
             log("success", "로컬 전략 실행 완료")
             return ExecuteResponse(
@@ -283,7 +286,7 @@ async def execute_strategy(request: ExecuteRequest):
 
             results = execute_from_builder_state(
                 builder_state, strategy_name, stocks,
-                log, get_stock_name, _api_sleep,
+                log, get_stock_name, _api_sleep, current_mode,
             )
             log("success", "빌더 전략 실행 완료")
             return ExecuteResponse(

@@ -14,11 +14,35 @@ import type {
   YamlIndicator,
   YamlCandlestick,
   YamlCondition,
+  PositionManagement,
 } from "@/types/builder";
 import { getIndicatorById, CANDLESTICK_PATTERNS } from "@/lib/builder/constants";
 
 // 캔들스틱 패턴 ID Set (빠른 lookup)
 const CANDLESTICK_IDS = new Set(CANDLESTICK_PATTERNS.map(p => p.id));
+
+const DEFAULT_POSITION_MANAGEMENT: PositionManagement = {
+  splitEntriesEnabled: false,
+  splitExitsEnabled: false,
+  entrySteps: [
+    { id: "entry_step_1", enabled: true, allocationPercent: 100, trigger: "signal" },
+    { id: "entry_step_2", enabled: false, allocationPercent: 0, trigger: "additional_drop_pct", dropPercent: 3 },
+    { id: "entry_step_3", enabled: false, allocationPercent: 0, trigger: "additional_drop_pct", dropPercent: 6 },
+    { id: "entry_step_4", enabled: false, allocationPercent: 0, trigger: "additional_drop_pct", dropPercent: 9 },
+    { id: "entry_step_5", enabled: false, allocationPercent: 0, trigger: "additional_drop_pct", dropPercent: 12 },
+  ],
+  exitSteps: [
+    { id: "exit_step_1", enabled: true, allocationPercent: 100, trigger: "exit_signal" },
+    { id: "exit_step_2", enabled: false, allocationPercent: 0, trigger: "take_profit_pct", targetPercent: 5 },
+  ],
+  cycleReentry: {
+    enabled: false,
+    baseAmount: 5_000_000,
+    splitCount: 5,
+    dropPercent: 5,
+    takeProfitPercent: 3,
+  },
+};
 
 // ── 지표 유형별 분류 Set (모듈 레벨 상수 — 매 호출마다 재생성 방지) ──
 const MA_OVERLAY = new Set([
@@ -488,6 +512,7 @@ export const INITIAL_STATE: BuilderState = {
     takeProfit: { enabled: false, percent: 10 },
     trailingStop: { enabled: false, percent: 3 },
   },
+  positionManagement: DEFAULT_POSITION_MANAGEMENT,
 };
 
 // ============================================================
@@ -706,7 +731,20 @@ function builderReducer(state: BuilderState, action: BuilderAction): BuilderStat
         return ind;
       });
 
-      return { ...loaded, indicators: fixedIndicators };
+      return {
+        ...loaded,
+        indicators: fixedIndicators,
+        positionManagement: loaded.positionManagement
+          ? {
+              ...DEFAULT_POSITION_MANAGEMENT,
+              ...loaded.positionManagement,
+              cycleReentry: {
+                ...DEFAULT_POSITION_MANAGEMENT.cycleReentry,
+                ...loaded.positionManagement.cycleReentry,
+              },
+            }
+          : DEFAULT_POSITION_MANAGEMENT,
+      };
     }
 
     case "RESET":
@@ -817,6 +855,10 @@ export function useStrategyBuilder(initialState?: BuilderState) {
   const setRisk = useCallback((updates: Partial<RiskManagement>) => {
     dispatch({ type: "SET_RISK", payload: updates });
   }, []);
+
+  const setPositionManagement = useCallback((positionManagement: PositionManagement) => {
+    dispatch({ type: "LOAD_STATE", payload: { ...state, positionManagement } });
+  }, [state]);
 
   // ============================================================
   // State Actions
@@ -977,6 +1019,47 @@ export function useStrategyBuilder(initialState?: BuilderState) {
           ? { enabled: true, percent: state.risk.trailingStop.percent }
           : undefined,
       },
+      position_management:
+        state.positionManagement.splitEntriesEnabled ||
+        state.positionManagement.splitExitsEnabled ||
+        state.positionManagement.cycleReentry.enabled
+          ? {
+              entry_splits: state.positionManagement.splitEntriesEnabled
+                ? state.positionManagement.entrySteps
+                    .filter((step) => step.enabled && step.allocationPercent > 0)
+                    .map((step) => ({
+                      percent: step.allocationPercent,
+                      trigger: step.trigger,
+                      drop_percent: step.trigger === "additional_drop_pct" ? step.dropPercent : undefined,
+                    }))
+                : undefined,
+              exit_splits: state.positionManagement.splitExitsEnabled
+                ? state.positionManagement.exitSteps
+                    .filter((step) => step.enabled && step.allocationPercent > 0)
+                    .map((step) => ({
+                      percent: step.allocationPercent,
+                      trigger: step.trigger,
+                      target_percent: (
+                        step.trigger === "take_profit_pct" ||
+                        step.trigger === "stop_loss_pct" ||
+                        step.trigger === "trailing_stop_pct"
+                      )
+                        ? step.targetPercent
+                        : undefined,
+                      hold_days: step.trigger === "hold_days" ? step.holdDays : undefined,
+                    }))
+                : undefined,
+              cycle_reentry: state.positionManagement.cycleReentry.enabled
+                ? {
+                    enabled: true,
+                    base_amount: state.positionManagement.cycleReentry.baseAmount,
+                    split_count: state.positionManagement.cycleReentry.splitCount,
+                    drop_percent: state.positionManagement.cycleReentry.dropPercent,
+                    take_profit_percent: state.positionManagement.cycleReentry.takeProfitPercent,
+                  }
+                : undefined,
+            }
+          : undefined,
     };
   }, [state]);
 
@@ -1020,7 +1103,7 @@ export function useStrategyBuilder(initialState?: BuilderState) {
         }
       });
     } else {
-      lines.push("    []");
+      lines[lines.length - 1] = "  indicators: []";
     }
 
     // 캔들스틱 패턴 출력
@@ -1035,47 +1118,55 @@ export function useStrategyBuilder(initialState?: BuilderState) {
     lines.push("");
     lines.push("  entry:");
     lines.push(`    logic: ${yaml.strategy.entry.logic}`);
-    lines.push("    conditions:");
-    yaml.strategy.entry.conditions.forEach((c) => {
-      // 캔들스틱 조건
-      if (c.candlestick) {
-        lines.push(`      - candlestick: ${c.candlestick}`);
-        lines.push(`        signal: ${c.signal || "detected"}`);
-      } else {
-        // 일반 지표 조건
-        lines.push(`      - indicator: ${c.indicator || ""}`);
-        lines.push(`        operator: ${c.operator || "gt"}`);
-        lines.push(`        compare_to: ${c.compare_to ?? 0}`);
-        if (c.output) {
-          lines.push(`        output: ${c.output}`);
+    if (yaml.strategy.entry.conditions.length > 0) {
+      lines.push("    conditions:");
+      yaml.strategy.entry.conditions.forEach((c) => {
+        // 캔들스틱 조건
+        if (c.candlestick) {
+          lines.push(`      - candlestick: ${c.candlestick}`);
+          lines.push(`        signal: ${c.signal || "detected"}`);
+        } else {
+          // 일반 지표 조건
+          lines.push(`      - indicator: ${c.indicator || ""}`);
+          lines.push(`        operator: ${c.operator || "gt"}`);
+          lines.push(`        compare_to: ${c.compare_to ?? 0}`);
+          if (c.output) {
+            lines.push(`        output: ${c.output}`);
+          }
+          if (c.compare_output) {
+            lines.push(`        compare_output: ${c.compare_output}`);
+          }
         }
-        if (c.compare_output) {
-          lines.push(`        compare_output: ${c.compare_output}`);
-        }
-      }
-    });
+      });
+    } else {
+      lines.push("    conditions: []");
+    }
     lines.push("");
     lines.push("  exit:");
     lines.push(`    logic: ${yaml.strategy.exit.logic}`);
-    lines.push("    conditions:");
-    yaml.strategy.exit.conditions.forEach((c) => {
-      // 캔들스틱 조건
-      if (c.candlestick) {
-        lines.push(`      - candlestick: ${c.candlestick}`);
-        lines.push(`        signal: ${c.signal || "detected"}`);
-      } else {
-        // 일반 지표 조건
-        lines.push(`      - indicator: ${c.indicator || ""}`);
-        lines.push(`        operator: ${c.operator || "gt"}`);
-        lines.push(`        compare_to: ${c.compare_to ?? 0}`);
-        if (c.output) {
-          lines.push(`        output: ${c.output}`);
+    if (yaml.strategy.exit.conditions.length > 0) {
+      lines.push("    conditions:");
+      yaml.strategy.exit.conditions.forEach((c) => {
+        // 캔들스틱 조건
+        if (c.candlestick) {
+          lines.push(`      - candlestick: ${c.candlestick}`);
+          lines.push(`        signal: ${c.signal || "detected"}`);
+        } else {
+          // 일반 지표 조건
+          lines.push(`      - indicator: ${c.indicator || ""}`);
+          lines.push(`        operator: ${c.operator || "gt"}`);
+          lines.push(`        compare_to: ${c.compare_to ?? 0}`);
+          if (c.output) {
+            lines.push(`        output: ${c.output}`);
+          }
+          if (c.compare_output) {
+            lines.push(`        compare_output: ${c.compare_output}`);
+          }
         }
-        if (c.compare_output) {
-          lines.push(`        compare_output: ${c.compare_output}`);
-        }
-      }
-    });
+      });
+    } else {
+      lines.push("    conditions: []");
+    }
     lines.push("");
     // risk 섹션: 활성화된 설정이 하나라도 있으면 출력, 없으면 빈 객체
     const hasRisk = yaml.risk.stop_loss || yaml.risk.take_profit || yaml.risk.trailing_stop;
@@ -1101,6 +1192,46 @@ export function useStrategyBuilder(initialState?: BuilderState) {
       lines.push("risk: {}");
     }
 
+    const hasPositionManagement =
+      yaml.position_management?.entry_splits?.length ||
+      yaml.position_management?.exit_splits?.length ||
+      yaml.position_management?.cycle_reentry?.enabled;
+    if (hasPositionManagement) {
+      lines.push("");
+      lines.push("position_management:");
+      if (yaml.position_management?.entry_splits?.length) {
+        lines.push("  entry_splits:");
+        yaml.position_management.entry_splits.forEach((step) => {
+          lines.push(`    - percent: ${step.percent}`);
+          lines.push(`      trigger: ${step.trigger}`);
+          if (step.drop_percent !== undefined) {
+            lines.push(`      drop_percent: ${step.drop_percent}`);
+          }
+        });
+      }
+      if (yaml.position_management?.exit_splits?.length) {
+        lines.push("  exit_splits:");
+        yaml.position_management.exit_splits.forEach((step) => {
+          lines.push(`    - percent: ${step.percent}`);
+          lines.push(`      trigger: ${step.trigger}`);
+          if (step.target_percent !== undefined) {
+            lines.push(`      target_percent: ${step.target_percent}`);
+          }
+          if (step.hold_days !== undefined) {
+            lines.push(`      hold_days: ${step.hold_days}`);
+          }
+        });
+      }
+      if (yaml.position_management?.cycle_reentry?.enabled) {
+        lines.push("  cycle_reentry:");
+        lines.push(`    enabled: ${yaml.position_management.cycle_reentry.enabled}`);
+        lines.push(`    base_amount: ${yaml.position_management.cycle_reentry.base_amount}`);
+        lines.push(`    split_count: ${yaml.position_management.cycle_reentry.split_count}`);
+        lines.push(`    drop_percent: ${yaml.position_management.cycle_reentry.drop_percent}`);
+        lines.push(`    take_profit_percent: ${yaml.position_management.cycle_reentry.take_profit_percent}`);
+      }
+    }
+
     return lines.join("\n");
   }, [toYaml]);
 
@@ -1109,26 +1240,42 @@ export function useStrategyBuilder(initialState?: BuilderState) {
   // ============================================================
 
   const isValid = useMemo((): boolean => {
+    const cycleReentryEnabled = state.positionManagement.cycleReentry.enabled;
     if (!state.metadata.name.trim()) return false;
-    if (state.indicators.length === 0) return false;
-    if (state.entry.conditions.length === 0) return false;
-    if (state.exit.conditions.length === 0) return false;
+    if (!cycleReentryEnabled && state.indicators.length === 0) return false;
+    if (!cycleReentryEnabled && state.entry.conditions.length === 0) return false;
+    if (!cycleReentryEnabled && state.exit.conditions.length === 0) return false;
     return true;
   }, [state]);
 
   const validationErrors = useMemo((): string[] => {
     const errors: string[] = [];
+    const cycleReentryEnabled = state.positionManagement.cycleReentry.enabled;
     if (!state.metadata.name.trim()) {
       errors.push("전략 이름을 입력하세요");
     }
-    if (state.indicators.length === 0) {
+    if (!cycleReentryEnabled && state.indicators.length === 0) {
       errors.push("최소 1개의 지표를 추가하세요");
     }
-    if (state.entry.conditions.length === 0) {
+    if (!cycleReentryEnabled && state.entry.conditions.length === 0) {
       errors.push("진입 조건을 추가하세요");
     }
-    if (state.exit.conditions.length === 0) {
+    if (!cycleReentryEnabled && state.exit.conditions.length === 0) {
       errors.push("청산 조건을 추가하세요");
+    }
+    if (cycleReentryEnabled) {
+      if (state.positionManagement.cycleReentry.splitCount < 1) {
+        errors.push("분할매수 횟수는 1회 이상이어야 합니다");
+      }
+      if (state.positionManagement.cycleReentry.baseAmount <= 0) {
+        errors.push("기준금액은 0보다 커야 합니다");
+      }
+      if (state.positionManagement.cycleReentry.dropPercent <= 0) {
+        errors.push("추가매수 하락률 A는 0보다 커야 합니다");
+      }
+      if (state.positionManagement.cycleReentry.takeProfitPercent <= 0) {
+        errors.push("익절률 B는 0보다 커야 합니다");
+      }
     }
     return errors;
   }, [state]);
@@ -1205,6 +1352,7 @@ export function useStrategyBuilder(initialState?: BuilderState) {
     setExitLogic,
     // Risk
     setRisk,
+    setPositionManagement,
     // State
     loadState,
     reset,

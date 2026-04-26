@@ -59,6 +59,7 @@ export interface PendingOrder {
   filled_qty: number;
   unfilled_qty: number;
   order_time: string;
+  is_reservation?: boolean;
 }
 
 export interface PendingOrdersResponse {
@@ -72,6 +73,7 @@ export interface CancelOrderRequest {
   org_no: string;
   stock_code: string;
   qty: number;
+  is_reservation?: boolean;
 }
 
 export interface CancelOrderResponse {
@@ -79,6 +81,46 @@ export interface CancelOrderResponse {
   success: boolean;
   order_no: string;
   message: string;
+}
+
+export interface ExecutionHistoryItem {
+  event_id: string;
+  event_type: "order_submitted" | "partial_fill" | "order_filled" | "order_closed";
+  timestamp: string;
+  order_no: string;
+  stock_code: string;
+  stock_name: string;
+  action: "BUY" | "SELL";
+  order_type: "market" | "limit" | string;
+  quantity: number;
+  price: number;
+  step_index?: number | null;
+  strategy_key?: string | null;
+  avg_price_after?: number | null;
+  balance_after?: number | null;
+  note?: string;
+}
+
+export interface CycleStatusItem {
+  strategy_key: string;
+  stock_code: string;
+  stock_name: string;
+  entry_count: number;
+  last_entry_price: number;
+  quantity: number;
+  avg_price: number;
+  last_buy_price: number;
+  last_buy_quantity: number;
+  last_sell_price: number;
+  last_sell_quantity: number;
+  updated_at?: string | null;
+}
+
+export interface ExecutionHistoryResponse {
+  status: string;
+  history: ExecutionHistoryItem[];
+  cycle_statuses: CycleStatusItem[];
+  last_synced_at?: string | null;
 }
 
 /**
@@ -93,6 +135,7 @@ export async function executeOrder(request: OrderRequest): Promise<OrderResponse
     price: request.price || 0,
     quantity: request.quantity,
     signal_reason: request.signal_reason || "수동 주문",
+    strategy_context: request.strategy_context,
   });
 }
 
@@ -119,6 +162,10 @@ export async function clearAccountCache(): Promise<{ status: string; message: st
  */
 export async function getPendingOrders(): Promise<PendingOrdersResponse> {
   return apiGet<PendingOrdersResponse>("/api/orders/pending");
+}
+
+export async function getExecutionHistory(): Promise<ExecutionHistoryResponse> {
+  return apiGet<ExecutionHistoryResponse>("/api/orders/execution-history");
 }
 
 /**

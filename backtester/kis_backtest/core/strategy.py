@@ -69,6 +69,7 @@ class StrategyDefinition:
     params: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     validation: List[Dict[str, str]] = field(default_factory=list)
     risk_management: Dict[str, Any] = field(default_factory=dict)
+    position_management: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
     version: str = "1.0.0"
     
@@ -90,6 +91,7 @@ class StrategyDefinition:
             params=data.get("params", {}),
             validation=data.get("validation", []),
             risk_management=data.get("risk_management", {}),
+            position_management=data.get("position_management", {}),
             metadata=data.get("metadata", {}),
             version=data.get("version", "1.0.0"),
         )
@@ -112,6 +114,7 @@ class StrategyDefinition:
             params=new_params,
             validation=self.validation,
             risk_management=self.risk_management,
+            position_management=self.position_management,
             metadata=self.metadata,
             version=self.version,
         )

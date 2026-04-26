@@ -271,11 +271,16 @@ async def validate_strategy(file: UploadFile = File(...)) -> dict:
         
         # 추가 검증
         errors = []
-        if not strategy_file.strategy.indicators:
+        cycle_reentry_enabled = bool(
+            strategy_file.position_management and
+            strategy_file.position_management.cycle_reentry and
+            strategy_file.position_management.cycle_reentry.enabled
+        )
+        if not cycle_reentry_enabled and not strategy_file.strategy.indicators:
             errors.append("No indicators defined")
-        if not strategy_file.strategy.entry.conditions:
+        if not cycle_reentry_enabled and not strategy_file.strategy.entry.conditions:
             errors.append("No entry conditions defined")
-        if not strategy_file.strategy.exit.conditions:
+        if not cycle_reentry_enabled and not strategy_file.strategy.exit.conditions:
             errors.append("No exit conditions defined")
         
         return {

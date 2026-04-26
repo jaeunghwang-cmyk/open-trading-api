@@ -583,6 +583,14 @@ class CustomFeeModel(FeeModel):
 
         # 리스크 관리 코드 생성
         risk_init, risk_check, risk_update = self._generate_risk_management()
+        position_init, entry_action, exit_action = self._generate_position_management()
+        cycle_reentry = (
+            self.schema.position_management is not None and
+            getattr(self.schema.position_management, "cycle_reentry", None) is not None and
+            self.schema.position_management.cycle_reentry.enabled
+        )
+        if cycle_reentry and not self.schema.indicators and not self.schema.candlesticks:
+            warmup = 1
 
         # 날짜 파싱
         start_parts = start_date.split("-")
@@ -644,6 +652,7 @@ class Algorithm(QCAlgorithm):
         self.prev_values = {{}}
 {custom_init}
 {risk_init}
+{position_init}
 
         for symbol_str in "{symbols_str}".split(","):
             symbol = self.AddData({data_class}, symbol_str, Resolution.Daily).Symbol
@@ -692,20 +701,14 @@ class Algorithm(QCAlgorithm):
 
             # === 진입 조건 ===
 {entry_condition}
-
-            if entry_signal and holdings == 0:
-                weight = 1.0 / len(self.symbols)
-                self.SetHoldings(symbol, weight, tag=f"ENTRY: {{self.strategy_name}}")
-                self.Debug(f"{{self.Time}} BUY {{symbol}} | {{self.strategy_name}}")
+            entry_executed = False
+{entry_action}
 {risk_update}
 
             # === 청산 조건 ===
 {exit_condition}
 {risk_check}
-
-            if exit_signal and holdings > 0:
-                self.Liquidate(symbol, tag=f"EXIT: {{self.strategy_name}}")
-                self.Debug(f"{{self.Time}} SELL {{symbol}} | {{self.strategy_name}}")
+{exit_action}
 
             # === 이전값 업데이트 ===
 {prev_update}'''
@@ -1196,7 +1199,7 @@ class Algorithm(QCAlgorithm):
         if risk.stop_loss_pct is not None:
             sl_pct = risk.stop_loss_pct
             init_lines.append("        self.entry_prices = {}")
-            update_lines.append("                self.entry_prices[symbol] = price")
+            update_lines.append("            if entry_executed:\n                self.entry_prices[symbol] = price")
             check_lines.append(f'''
             # 손절 체크 ({sl_pct}%)
             if symbol in self.entry_prices and holdings > 0:
@@ -1208,8 +1211,8 @@ class Algorithm(QCAlgorithm):
             tp_pct = risk.take_profit_pct
             if "self.entry_prices = {}" not in init_lines:
                 init_lines.append("        self.entry_prices = {}")
-            if "self.entry_prices[symbol] = price" not in update_lines:
-                update_lines.append("                self.entry_prices[symbol] = price")
+            if "self.entry_prices[symbol] = price" not in "\n".join(update_lines):
+                update_lines.append("            if entry_executed:\n                self.entry_prices[symbol] = price")
             check_lines.append(f'''
             # 익절 체크 ({tp_pct}%)
             if symbol in self.entry_prices and holdings > 0:
@@ -1220,7 +1223,7 @@ class Algorithm(QCAlgorithm):
         if risk.trailing_stop_pct is not None:
             ts_pct = risk.trailing_stop_pct
             init_lines.append("        self.high_prices = {}")
-            update_lines.append("                self.high_prices[symbol] = price")
+            update_lines.append("            if entry_executed:\n                self.high_prices[symbol] = price")
             check_lines.append(f'''
             # 트레일링 스탑 체크 ({ts_pct}%)
             if symbol in self.high_prices and holdings > 0:
@@ -1234,6 +1237,181 @@ class Algorithm(QCAlgorithm):
         update_str = "\n".join(update_lines) if update_lines else ""
         
         return init_str, check_str, update_str
+
+    def _generate_position_management(self) -> tuple[str, str, str]:
+        """분할 진입/청산 코드 생성"""
+        pm = self.schema.position_management
+        if pm is None:
+            return "", (
+                '''            if entry_signal and holdings == 0:
+                weight = 1.0 / len(self.symbols)
+                self.SetHoldings(symbol, weight, tag=f"ENTRY: {self.strategy_name}")
+                self.Debug(f"{self.Time} BUY {symbol} | {self.strategy_name}")
+                entry_executed = True'''
+            ), (
+                '''            if exit_signal and holdings > 0:
+                self.Liquidate(symbol, tag=f"EXIT: {self.strategy_name}")
+                self.Debug(f"{self.Time} SELL {symbol} | {self.strategy_name}")'''
+            )
+
+        cycle_reentry = getattr(pm, "cycle_reentry", None)
+        if cycle_reentry is not None and cycle_reentry.enabled:
+            base_amount = cycle_reentry.base_amount
+            split_count = cycle_reentry.split_count
+            drop_percent = cycle_reentry.drop_percent
+            take_profit_percent = cycle_reentry.take_profit_percent
+
+            init_code = """        self.cycle_entry_counts = {}
+        self.last_cycle_entry_price = {}"""
+
+            entry_code = f'''            self.cycle_entry_counts.setdefault(symbol, 0)
+            tranche_amount = {base_amount} / {split_count}
+
+            if holdings == 0:
+                quantity = int(tranche_amount / price)
+                if quantity > 0:
+                    self.MarketOrder(symbol, quantity, tag=f"CYCLE ENTRY 1/{split_count}: {{self.strategy_name}}")
+                    self.cycle_entry_counts[symbol] = 1
+                    self.last_cycle_entry_price[symbol] = price
+                    self.Debug(f"{{self.Time}} BUY {{symbol}} cycle_entry=1/{split_count} amount={{tranche_amount:,.0f}}")
+                    entry_executed = True
+            else:
+                current_count = self.cycle_entry_counts.get(symbol, 1)
+                last_buy_price = float(self.last_cycle_entry_price.get(symbol, 0) or 0)
+                trigger_price = last_buy_price * (1 - {drop_percent} / 100.0) if last_buy_price > 0 else None
+                if (
+                    last_buy_price > 0 and
+                    current_count < {split_count} and
+                    trigger_price is not None and
+                    price <= trigger_price
+                ):
+                    quantity = int(tranche_amount / price)
+                    if quantity > 0:
+                        self.MarketOrder(symbol, quantity, tag=f"CYCLE ENTRY {{current_count + 1}}/{split_count}: {{self.strategy_name}}")
+                        self.cycle_entry_counts[symbol] = current_count + 1
+                        self.last_cycle_entry_price[symbol] = price
+                        self.Debug(f"{{self.Time}} BUY {{symbol}} cycle_entry={{current_count + 1}}/{split_count} amount={{tranche_amount:,.0f}} drop_trigger={drop_percent}%")
+                        entry_executed = True'''
+
+            exit_code = f'''            if holdings > 0:
+                avg_price = float(self.Portfolio[symbol].AveragePrice or 0)
+                profit_pct = ((price - avg_price) / avg_price * 100) if avg_price > 0 else 0
+                if avg_price > 0 and profit_pct >= {take_profit_percent}:
+                    self.Liquidate(symbol, tag=f"CYCLE EXIT TP {take_profit_percent}%: {{self.strategy_name}}")
+                    self.Debug(f"{{self.Time}} SELL {{symbol}} cycle_take_profit={take_profit_percent}%")
+
+            if self.Portfolio[symbol].Quantity == 0:
+                self.cycle_entry_counts[symbol] = 0
+                self.last_cycle_entry_price.pop(symbol, None)'''
+
+            return init_code, entry_code, exit_code
+
+        entry_steps = pm.entry_splits or []
+        exit_steps = pm.exit_splits or []
+        entry_steps_literal = repr([step.model_dump(exclude_none=True) for step in entry_steps]) if entry_steps else "[{'percent': 100.0, 'trigger': 'signal'}]"
+        exit_steps_literal = repr([step.model_dump(exclude_none=True) for step in exit_steps]) if exit_steps else "[{'percent': 100.0, 'trigger': 'exit_signal'}]"
+
+        init_code = """        self.entry_step_state = {}
+        self.exit_step_state = {}
+        self.last_entry_price = {}
+        self.holding_days = {}"""
+
+        entry_code = f'''            self.entry_step_state.setdefault(symbol, set())
+            self.exit_step_state.setdefault(symbol, set())
+            self.holding_days.setdefault(symbol, 0)
+            entry_steps = {entry_steps_literal}
+
+            if entry_signal:
+                for step_index, step in enumerate(entry_steps):
+                    if step_index in self.entry_step_state[symbol]:
+                        continue
+
+                    trigger_ok = step.get("trigger") == "signal"
+                    if step.get("trigger") == "additional_drop_pct":
+                        last_price = self.last_entry_price.get(symbol)
+                        trigger_ok = (
+                            last_price is not None and
+                            price <= last_price * (1 - step.get("drop_percent", 0) / 100.0)
+                        )
+
+                    if not trigger_ok:
+                        continue
+
+                    target_value = self.Portfolio.TotalPortfolioValue * (step["percent"] / 100.0)
+                    quantity = int(target_value / price)
+                    if quantity <= 0:
+                        continue
+
+                    self.MarketOrder(symbol, quantity, tag=f"ENTRY {{step_index + 1}}: {{self.strategy_name}}")
+                    self.entry_step_state[symbol].add(step_index)
+                    self.last_entry_price[symbol] = price
+                    self.holding_days[symbol] = 0
+                    self.Debug(f"{{self.Time}} BUY {{symbol}} step={{step_index + 1}} alloc={{step['percent']}}%")
+                    entry_executed = True
+                    break'''
+
+        exit_code = f'''            if holdings > 0:
+                self.holding_days[symbol] = self.holding_days.get(symbol, 0) + 1
+            else:
+                self.holding_days[symbol] = 0
+
+            if holdings > 0:
+                exit_steps = {exit_steps_literal}
+                remaining_qty = abs(int(self.Portfolio[symbol].Quantity))
+                profit_pct = None
+                stop_loss_pct = None
+                trailing_drawdown_pct = None
+
+                if symbol in getattr(self, "entry_prices", {{}}):
+                    avg_entry = self.entry_prices[symbol]
+                    profit_pct = (price - avg_entry) / avg_entry * 100
+                    stop_loss_pct = -profit_pct
+
+                if symbol in getattr(self, "high_prices", {{}}):
+                    high_price = self.high_prices[symbol]
+                    trailing_drawdown_pct = (high_price - price) / high_price * 100
+
+                for step_index, step in enumerate(exit_steps):
+                    if step_index in self.exit_step_state[symbol]:
+                        continue
+
+                    trigger = step.get("trigger")
+                    should_exit = False
+                    if trigger == "exit_signal":
+                        should_exit = exit_signal
+                    elif trigger == "take_profit_pct" and profit_pct is not None:
+                        should_exit = profit_pct >= step.get("target_percent", 0)
+                    elif trigger == "stop_loss_pct" and stop_loss_pct is not None:
+                        should_exit = stop_loss_pct >= step.get("target_percent", 0)
+                    elif trigger == "trailing_stop_pct" and trailing_drawdown_pct is not None:
+                        should_exit = trailing_drawdown_pct >= step.get("target_percent", 0)
+                    elif trigger == "hold_days":
+                        should_exit = self.holding_days.get(symbol, 0) >= int(step.get("hold_days", 1))
+
+                    if not should_exit:
+                        continue
+
+                    quantity = max(1, int(round(remaining_qty * (step["percent"] / 100.0))))
+                    quantity = min(quantity, remaining_qty)
+                    self.MarketOrder(symbol, -quantity, tag=f"EXIT {{step_index + 1}}: {{self.strategy_name}}")
+                    self.exit_step_state[symbol].add(step_index)
+                    remaining_qty -= quantity
+                    self.Debug(f"{{self.Time}} SELL {{symbol}} step={{step_index + 1}} alloc={{step['percent']}}%")
+
+                    if remaining_qty <= 0:
+                        break
+
+            if self.Portfolio[symbol].Quantity == 0:
+                self.entry_step_state[symbol] = set()
+                self.exit_step_state[symbol] = set()
+                self.holding_days[symbol] = 0
+                self.last_entry_price.pop(symbol, None)
+                if hasattr(self, "entry_prices"):
+                    self.entry_prices.pop(symbol, None)
+                if hasattr(self, "high_prices"):
+                    self.high_prices.pop(symbol, None)'''
+
+        return init_code, entry_code, exit_code
     
     def save(self, output_path: Path) -> None:
         """코드를 파일로 저장

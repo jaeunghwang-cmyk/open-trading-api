@@ -3,14 +3,42 @@
 import { useCallback } from "react";
 import { Shield, TrendingDown, TrendingUp, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { RiskManagement } from "@/types/builder";
+import type {
+  EntrySplitStep,
+  ExitSplitStep,
+  PositionManagement,
+  RiskManagement,
+} from "@/types/builder";
 
 interface RiskManagerProps {
-  risk: RiskManagement;
-  onChange: (updates: Partial<RiskManagement>) => void;
+  risk: RiskManagement & { positionManagement?: PositionManagement };
+  onChange: (updates: Partial<RiskManagement> & { positionManagement?: PositionManagement }) => void;
 }
 
 export function RiskManager({ risk, onChange }: RiskManagerProps) {
+  const positionManagement = risk.positionManagement ?? {
+    splitEntriesEnabled: false,
+    splitExitsEnabled: false,
+    entrySteps: [
+      { id: "entry_step_1", enabled: true, allocationPercent: 100, trigger: "signal" as const },
+      { id: "entry_step_2", enabled: false, allocationPercent: 0, trigger: "additional_drop_pct" as const, dropPercent: 3 },
+      { id: "entry_step_3", enabled: false, allocationPercent: 0, trigger: "additional_drop_pct" as const, dropPercent: 6 },
+      { id: "entry_step_4", enabled: false, allocationPercent: 0, trigger: "additional_drop_pct" as const, dropPercent: 9 },
+      { id: "entry_step_5", enabled: false, allocationPercent: 0, trigger: "additional_drop_pct" as const, dropPercent: 12 },
+    ],
+    exitSteps: [
+      { id: "exit_step_1", enabled: true, allocationPercent: 100, trigger: "exit_signal" as const },
+      { id: "exit_step_2", enabled: false, allocationPercent: 0, trigger: "take_profit_pct" as const, targetPercent: 5 },
+    ],
+    cycleReentry: {
+      enabled: false,
+      baseAmount: 5_000_000,
+      splitCount: 5,
+      dropPercent: 5,
+      takeProfitPercent: 3,
+    },
+  };
+
   const handleStopLossToggle = useCallback(() => {
     onChange({
       stopLoss: {
@@ -74,6 +102,31 @@ export function RiskManager({ risk, onChange }: RiskManagerProps) {
     [onChange, risk.trailingStop]
   );
 
+  const updatePositionManagement = useCallback((updates: Partial<PositionManagement>) => {
+    onChange({
+      positionManagement: {
+        ...positionManagement,
+        ...updates,
+      },
+    });
+  }, [onChange, positionManagement]);
+
+  const updateEntryStep = useCallback((id: string, updates: Partial<EntrySplitStep>) => {
+    updatePositionManagement({
+      entrySteps: positionManagement.entrySteps.map((step) =>
+        step.id === id ? { ...step, ...updates } : step
+      ),
+    });
+  }, [positionManagement.entrySteps, updatePositionManagement]);
+
+  const updateExitStep = useCallback((id: string, updates: Partial<ExitSplitStep>) => {
+    updatePositionManagement({
+      exitSteps: positionManagement.exitSteps.map((step) =>
+        step.id === id ? { ...step, ...updates } : step
+      ),
+    });
+  }, [positionManagement.exitSteps, updatePositionManagement]);
+
   return (
     <div className="space-y-4">
       <RiskItem
@@ -112,6 +165,142 @@ export function RiskManager({ risk, onChange }: RiskManagerProps) {
         color="blue"
       />
 
+      <SplitSection
+        title="반복 분할매수 사이클"
+        description="기준금액을 N분할해 시가 진입하고, 마지막 매수가 대비 -A%마다 같은 금액으로 추가매수한 뒤 평단 기준 +B% 수익 시 전량 매도 후 다음 사이클을 다시 시작합니다."
+        enabled={positionManagement.cycleReentry.enabled}
+        onToggle={() =>
+          updatePositionManagement({
+            cycleReentry: {
+              ...positionManagement.cycleReentry,
+              enabled: !positionManagement.cycleReentry.enabled,
+            },
+          })
+        }
+      >
+        <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 space-y-3">
+          <div className="grid grid-cols-4 gap-2">
+            <label className="text-xs text-slate-500">
+              기준금액
+              <input
+                type="number"
+                min={1}
+                step={10000}
+                value={positionManagement.cycleReentry.baseAmount}
+                onChange={(e) =>
+                  updatePositionManagement({
+                    cycleReentry: {
+                      ...positionManagement.cycleReentry,
+                      baseAmount: Math.max(1, parseFloat(e.target.value) || 1),
+                    },
+                  })
+                }
+                className="mt-1 w-full px-2 py-1 text-sm border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800"
+              />
+            </label>
+            <label className="text-xs text-slate-500">
+              분할 횟수
+              <input
+                type="number"
+                min={1}
+                max={10}
+                step={1}
+                value={positionManagement.cycleReentry.splitCount}
+                onChange={(e) =>
+                  updatePositionManagement({
+                    cycleReentry: {
+                      ...positionManagement.cycleReentry,
+                      splitCount: Math.max(1, parseInt(e.target.value, 10) || 1),
+                    },
+                  })
+                }
+                className="mt-1 w-full px-2 py-1 text-sm border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800"
+              />
+            </label>
+            <label className="text-xs text-slate-500">
+              추가매수 A%
+              <input
+                type="number"
+                min={0.1}
+                max={100}
+                step={0.1}
+                value={positionManagement.cycleReentry.dropPercent}
+                onChange={(e) =>
+                  updatePositionManagement({
+                    cycleReentry: {
+                      ...positionManagement.cycleReentry,
+                      dropPercent: Math.max(0.1, parseFloat(e.target.value) || 0.1),
+                    },
+                  })
+                }
+                className="mt-1 w-full px-2 py-1 text-sm border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800"
+              />
+            </label>
+            <label className="text-xs text-slate-500">
+              익절 B%
+              <input
+                type="number"
+                min={0.1}
+                max={100}
+                step={0.1}
+                value={positionManagement.cycleReentry.takeProfitPercent}
+                onChange={(e) =>
+                  updatePositionManagement({
+                    cycleReentry: {
+                      ...positionManagement.cycleReentry,
+                      takeProfitPercent: Math.max(0.1, parseFloat(e.target.value) || 0.1),
+                    },
+                  })
+                }
+                className="mt-1 w-full px-2 py-1 text-sm border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800"
+              />
+            </label>
+          </div>
+          <div className="text-xs text-slate-500">
+            1회 매수금액은 <span className="font-medium text-slate-700 dark:text-slate-200">
+              {Math.round(positionManagement.cycleReentry.baseAmount / Math.max(1, positionManagement.cycleReentry.splitCount)).toLocaleString()}원
+            </span>
+            입니다.
+          </div>
+        </div>
+      </SplitSection>
+
+      <SplitSection
+        title="분할 매수"
+        description="진입 신호 후 추가 하락 구간을 나눠서 비중별 진입합니다."
+        enabled={positionManagement.splitEntriesEnabled}
+        onToggle={() =>
+          updatePositionManagement({ splitEntriesEnabled: !positionManagement.splitEntriesEnabled })
+        }
+      >
+        {positionManagement.entrySteps.map((step, index) => (
+          <EntrySplitEditor
+            key={step.id}
+            label={`${index + 1}차 매수`}
+            step={step}
+            onChange={(updates) => updateEntryStep(step.id, updates)}
+          />
+        ))}
+      </SplitSection>
+
+      <SplitSection
+        title="분할 매도"
+        description="청산 신호 외에 익절·손절·보유기간 기준으로 부분 청산할 수 있습니다."
+        enabled={positionManagement.splitExitsEnabled}
+        onToggle={() =>
+          updatePositionManagement({ splitExitsEnabled: !positionManagement.splitExitsEnabled })
+        }
+      >
+        {positionManagement.exitSteps.map((step, index) => (
+          <ExitSplitEditor
+            key={step.id}
+            label={`${index + 1}차 매도`}
+            step={step}
+            onChange={(updates) => updateExitStep(step.id, updates)}
+          />
+        ))}
+      </SplitSection>
+
       {/* Info */}
       <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-lg">
         <div className="flex items-start gap-2">
@@ -122,6 +311,187 @@ export function RiskManager({ risk, onChange }: RiskManagerProps) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+interface SplitSectionProps {
+  title: string;
+  description: string;
+  enabled: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}
+
+function SplitSection({ title, description, enabled, onToggle, children }: SplitSectionProps) {
+  return (
+    <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900">
+      <div className="flex items-center justify-between mb-2">
+        <div>
+          <div className="font-medium text-sm text-slate-900 dark:text-white">{title}</div>
+          <div className="text-xs text-slate-500 mt-1">{description}</div>
+        </div>
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={onToggle}
+          className="toggle-switch toggle-blue"
+          role="switch"
+          aria-checked={enabled}
+          aria-label={title}
+        />
+      </div>
+      {enabled && <div className="space-y-3 mt-3">{children}</div>}
+    </div>
+  );
+}
+
+interface EntrySplitEditorProps {
+  label: string;
+  step: EntrySplitStep;
+  onChange: (updates: Partial<EntrySplitStep>) => void;
+}
+
+function EntrySplitEditor({ label, step, onChange }: EntrySplitEditorProps) {
+  return (
+    <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium text-slate-900 dark:text-white">{label}</div>
+        <input
+          type="checkbox"
+          checked={step.enabled}
+          onChange={() => onChange({ enabled: !step.enabled })}
+          className="toggle-switch toggle-green"
+          role="switch"
+          aria-checked={step.enabled}
+          aria-label={label}
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <label className="text-xs text-slate-500">
+          비중 %
+          <input
+            type="number"
+            min={0}
+            max={100}
+            step={1}
+            value={step.allocationPercent}
+            onChange={(e) => onChange({ allocationPercent: parseFloat(e.target.value) || 0 })}
+            className="mt-1 w-full px-2 py-1 text-sm border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800"
+          />
+        </label>
+        <label className="text-xs text-slate-500">
+          트리거
+          <select
+            value={step.trigger}
+            onChange={(e) => onChange({ trigger: e.target.value as EntrySplitStep["trigger"] })}
+            className="mt-1 w-full px-2 py-1 text-sm border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800"
+          >
+            <option value="signal">진입 신호</option>
+            <option value="additional_drop_pct">추가 하락 %</option>
+          </select>
+        </label>
+      </div>
+      {step.trigger === "additional_drop_pct" && (
+        <label className="text-xs text-slate-500 block">
+          이전 매수가 대비 추가 하락 %
+          <input
+            type="number"
+            min={0}
+            max={100}
+            step={0.1}
+            value={step.dropPercent ?? 0}
+            onChange={(e) => onChange({ dropPercent: parseFloat(e.target.value) || 0 })}
+            className="mt-1 w-full px-2 py-1 text-sm border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800"
+          />
+        </label>
+      )}
+    </div>
+  );
+}
+
+interface ExitSplitEditorProps {
+  label: string;
+  step: ExitSplitStep;
+  onChange: (updates: Partial<ExitSplitStep>) => void;
+}
+
+function ExitSplitEditor({ label, step, onChange }: ExitSplitEditorProps) {
+  const needsTarget =
+    step.trigger === "take_profit_pct" ||
+    step.trigger === "stop_loss_pct" ||
+    step.trigger === "trailing_stop_pct";
+
+  return (
+    <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium text-slate-900 dark:text-white">{label}</div>
+        <input
+          type="checkbox"
+          checked={step.enabled}
+          onChange={() => onChange({ enabled: !step.enabled })}
+          className="toggle-switch toggle-red"
+          role="switch"
+          aria-checked={step.enabled}
+          aria-label={label}
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <label className="text-xs text-slate-500">
+          비중 %
+          <input
+            type="number"
+            min={0}
+            max={100}
+            step={1}
+            value={step.allocationPercent}
+            onChange={(e) => onChange({ allocationPercent: parseFloat(e.target.value) || 0 })}
+            className="mt-1 w-full px-2 py-1 text-sm border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800"
+          />
+        </label>
+        <label className="text-xs text-slate-500">
+          트리거
+          <select
+            value={step.trigger}
+            onChange={(e) => onChange({ trigger: e.target.value as ExitSplitStep["trigger"] })}
+            className="mt-1 w-full px-2 py-1 text-sm border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800"
+          >
+            <option value="exit_signal">청산 신호</option>
+            <option value="take_profit_pct">익절 %</option>
+            <option value="stop_loss_pct">손절 %</option>
+            <option value="trailing_stop_pct">트레일링 %</option>
+            <option value="hold_days">보유일수</option>
+          </select>
+        </label>
+      </div>
+      {needsTarget && (
+        <label className="text-xs text-slate-500 block">
+          목표 %
+          <input
+            type="number"
+            min={0}
+            max={100}
+            step={0.1}
+            value={step.targetPercent ?? 0}
+            onChange={(e) => onChange({ targetPercent: parseFloat(e.target.value) || 0 })}
+            className="mt-1 w-full px-2 py-1 text-sm border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800"
+          />
+        </label>
+      )}
+      {step.trigger === "hold_days" && (
+        <label className="text-xs text-slate-500 block">
+          보유일수
+          <input
+            type="number"
+            min={1}
+            max={365}
+            step={1}
+            value={step.holdDays ?? 1}
+            onChange={(e) => onChange({ holdDays: parseInt(e.target.value, 10) || 1 })}
+            className="mt-1 w-full px-2 py-1 text-sm border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800"
+          />
+        </label>
+      )}
     </div>
   );
 }

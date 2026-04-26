@@ -85,4 +85,24 @@ export interface KisStrategyFile {
     take_profit?: { enabled: boolean; percent: number };
     trailing_stop?: { enabled: boolean; percent: number };
   };
+  position_management?: {
+    entry_splits?: Array<{
+      percent: number;
+      trigger: "signal" | "additional_drop_pct";
+      drop_percent?: number;
+    }>;
+    exit_splits?: Array<{
+      percent: number;
+      trigger: "exit_signal" | "take_profit_pct" | "stop_loss_pct" | "trailing_stop_pct" | "hold_days";
+      target_percent?: number;
+      hold_days?: number;
+    }>;
+    cycle_reentry?: {
+      enabled: boolean;
+      base_amount: number;
+      split_count: number;
+      drop_percent: number;
+      take_profit_percent: number;
+    };
+  };
 }

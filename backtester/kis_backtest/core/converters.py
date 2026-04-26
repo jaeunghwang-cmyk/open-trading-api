@@ -19,6 +19,7 @@ from kis_backtest.core.schema import (
     CompositeConditionSchema,
     IndicatorSchema,
     OperatorType,
+    PositionManagementSchema,
     RiskSchema,
     StrategySchema,
     PRICE_FIELDS,
@@ -129,6 +130,9 @@ def from_yaml_file(
 
     # 리스크 관리 변환
     risk = _convert_risk_from_yaml(strategy_file.risk)
+    position_management = _convert_position_management_from_yaml(
+        getattr(strategy_file, "position_management", None)
+    )
 
     return StrategySchema(
         id=strategy_file.strategy.id,
@@ -140,6 +144,7 @@ def from_yaml_file(
         entry=entry,
         exit=exit,
         risk=risk,
+        position_management=position_management,
         params=params,  # 원본 param 정의 유지
         metadata={
             "author": strategy_file.metadata.author,
@@ -169,7 +174,12 @@ def from_definition(definition: "StrategyDefinition") -> StrategySchema:
     
     # 리스크 관리 변환
     risk = RiskSchema.from_dict(definition.risk_management) if definition.risk_management else None
-    
+    position_management = (
+        PositionManagementSchema.model_validate(definition.position_management)
+        if getattr(definition, "position_management", None)
+        else None
+    )
+
     return StrategySchema(
         id=definition.id,
         name=definition.name,
@@ -179,6 +189,7 @@ def from_definition(definition: "StrategyDefinition") -> StrategySchema:
         entry=entry,
         exit=exit,
         risk=risk,
+        position_management=position_management,
         params=definition.params,
         metadata=definition.metadata,
         version=definition.version,
@@ -206,7 +217,13 @@ def from_dict(data: Dict[str, Any]) -> StrategySchema:
     # 리스크 관리 변환
     risk_data = data.get("risk_management") or data.get("risk", {})
     risk = RiskSchema.from_dict(risk_data) if risk_data else None
-    
+    position_management_data = data.get("position_management")
+    position_management = (
+        PositionManagementSchema.model_validate(position_management_data)
+        if position_management_data
+        else None
+    )
+
     return StrategySchema(
         id=data.get("id", ""),
         name=data.get("name", ""),
@@ -216,6 +233,7 @@ def from_dict(data: Dict[str, Any]) -> StrategySchema:
         entry=entry,
         exit=exit,
         risk=risk,
+        position_management=position_management,
         params=data.get("params", {}),
         metadata=data.get("metadata", {}),
         version=data.get("version", "1.0"),
@@ -463,6 +481,12 @@ def _convert_risk_from_yaml(risk) -> Optional[RiskSchema]:
         ),
         max_position_size=getattr(risk, 'max_position_size', None),
     )
+
+
+def _convert_position_management_from_yaml(position_management) -> Optional[PositionManagementSchema]:
+    if position_management is None:
+        return None
+    return PositionManagementSchema.model_validate(position_management.model_dump(exclude_none=True))
 
 
 def _normalize_operator(op: str) -> OperatorType:

@@ -4,6 +4,29 @@
 
 import type { BuilderState } from "@/types/builder";
 
+const DEFAULT_POSITION_MANAGEMENT = {
+  splitEntriesEnabled: false,
+  splitExitsEnabled: false,
+  entrySteps: [
+    { id: "entry_step_1", enabled: true, allocationPercent: 100, trigger: "signal" as const },
+    { id: "entry_step_2", enabled: false, allocationPercent: 0, trigger: "additional_drop_pct" as const, dropPercent: 3 },
+    { id: "entry_step_3", enabled: false, allocationPercent: 0, trigger: "additional_drop_pct" as const, dropPercent: 6 },
+    { id: "entry_step_4", enabled: false, allocationPercent: 0, trigger: "additional_drop_pct" as const, dropPercent: 9 },
+    { id: "entry_step_5", enabled: false, allocationPercent: 0, trigger: "additional_drop_pct" as const, dropPercent: 12 },
+  ],
+  exitSteps: [
+    { id: "exit_step_1", enabled: true, allocationPercent: 100, trigger: "exit_signal" as const },
+    { id: "exit_step_2", enabled: false, allocationPercent: 0, trigger: "take_profit_pct" as const, targetPercent: 5 },
+  ],
+  cycleReentry: {
+    enabled: false,
+    baseAmount: 5_000_000,
+    splitCount: 5,
+    dropPercent: 5,
+    takeProfitPercent: 3,
+  },
+};
+
 export interface PresetStrategy {
   id: string;
   name: string;
@@ -58,6 +81,7 @@ export const PRESET_STRATEGIES: PresetStrategy[] = [
         takeProfit: { enabled: false, percent: 10 },
         trailingStop: { enabled: false, percent: 3 },
       },
+      positionManagement: DEFAULT_POSITION_MANAGEMENT,
     },
   },
   {
@@ -104,6 +128,7 @@ export const PRESET_STRATEGIES: PresetStrategy[] = [
         takeProfit: { enabled: false, percent: 10 },
         trailingStop: { enabled: false, percent: 3 },
       },
+      positionManagement: DEFAULT_POSITION_MANAGEMENT,
     },
   },
   {
@@ -150,6 +175,7 @@ export const PRESET_STRATEGIES: PresetStrategy[] = [
         takeProfit: { enabled: true, percent: 10 },
         trailingStop: { enabled: false, percent: 3 },
       },
+      positionManagement: DEFAULT_POSITION_MANAGEMENT,
     },
   },
   {
@@ -196,6 +222,7 @@ export const PRESET_STRATEGIES: PresetStrategy[] = [
         takeProfit: { enabled: true, percent: 3 },
         trailingStop: { enabled: false, percent: 3 },
       },
+      positionManagement: DEFAULT_POSITION_MANAGEMENT,
     },
   },
   {
@@ -242,6 +269,7 @@ export const PRESET_STRATEGIES: PresetStrategy[] = [
         takeProfit: { enabled: false, percent: 10 },
         trailingStop: { enabled: false, percent: 3 },
       },
+      positionManagement: DEFAULT_POSITION_MANAGEMENT,
     },
   },
   {
@@ -287,6 +315,47 @@ export const PRESET_STRATEGIES: PresetStrategy[] = [
         stopLoss: { enabled: true, percent: 3 },
         takeProfit: { enabled: false, percent: 10 },
         trailingStop: { enabled: false, percent: 3 },
+      },
+      positionManagement: DEFAULT_POSITION_MANAGEMENT,
+    },
+  },
+  {
+    id: "cycle_reentry",
+    name: "반복 분할매수",
+    description: "첫 진입 후 마지막 매수가 대비 하락마다 분할매수하고 목표 수익 도달 시 전량매도 후 다시 사이클을 시작",
+    category: "분할매수",
+    state: {
+      metadata: {
+        id: "cycle_reentry",
+        name: "반복 분할매수",
+        description: "첫 진입 후 마지막 매수가 대비 하락마다 분할매수하고 목표 수익 도달 시 전량매도 후 다시 사이클을 시작",
+        category: "cycle",
+        tags: ["split_buy", "cycle", "take_profit"],
+        author: "KIS",
+      },
+      indicators: [],
+      entry: {
+        logic: "AND",
+        conditions: [],
+      },
+      exit: {
+        logic: "OR",
+        conditions: [],
+      },
+      risk: {
+        stopLoss: { enabled: false, percent: 5 },
+        takeProfit: { enabled: false, percent: 10 },
+        trailingStop: { enabled: false, percent: 3 },
+      },
+      positionManagement: {
+        ...DEFAULT_POSITION_MANAGEMENT,
+        cycleReentry: {
+          enabled: true,
+          baseAmount: 5_000_000,
+          splitCount: 5,
+          dropPercent: 5,
+          takeProfitPercent: 3,
+        },
       },
     },
   },

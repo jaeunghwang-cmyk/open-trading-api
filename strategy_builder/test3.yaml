@@ -1,0 +1,75 @@
+version: "1.0"
+
+metadata:
+  name: "롯데리츠 추천 전략"
+  description: "120일 추세 필터 아래 20일선 이격 분할매수와 평균단가 기반 청산을 사용하는 롯데리츠 전략"
+  author: "Codex"
+  tags:
+    - reits
+    - trend
+    - disparity
+    - split_entry
+
+strategy:
+  id: test3
+  category: reversal
+
+  indicators:
+    - id: sma
+      alias: ma_20
+      params:
+        period: 20
+      output: value
+    - id: sma
+      alias: ma_120
+      params:
+        period: 120
+      output: value
+    - id: disparity
+      alias: disp_20
+      params:
+        period: 20
+      output: value
+
+  entry:
+    logic: AND
+    conditions:
+      - indicator: close
+        operator: greater_than
+        compare_to: ma_120
+      - indicator: disp_20
+        operator: less_equal
+        compare_to: 98
+
+  exit:
+    logic: OR
+    conditions:
+      - indicator: close
+        operator: greater_equal
+        compare_to: ma_20
+
+position_management:
+  entry_splits:
+    - percent: 50
+      trigger: signal
+    - percent: 50
+      trigger: additional_drop_pct
+      drop_percent: 2
+  exit_splits:
+    - percent: 100
+      trigger: exit_signal
+    - percent: 100
+      trigger: take_profit_pct
+      target_percent: 2
+    - percent: 100
+      trigger: stop_loss_pct
+      target_percent: 4
+    - percent: 100
+      trigger: hold_days
+      hold_days: 10
+
+# 참고:
+# - 현재 분할매수 step trigger는 한 단계에 하나만 지정할 수 있습니다.
+# - 그래서 "2차 매수: 종가 <= 20일선 x 0.97 또는 1차 매수가 대비 -2%" 중에서는
+#   백테스터/빌더가 직접 지원하는 "1차 매수가 대비 -2%"를 우선 반영했습니다.
+# - "종가 <= 20일선 x 0.97"까지 OR로 함께 지원하려면 split trigger를 확장해야 합니다.

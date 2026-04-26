@@ -14,6 +14,7 @@ import type {
   ConditionOperator,
   ConditionOperand,
   RiskManagement,
+  PositionManagement,
 } from "@/types/builder";
 import type { KisStrategyFile, YamlConditionDef } from "@/types/file";
 import { getIndicatorById, CANDLESTICK_PATTERNS } from "./constants";
@@ -86,6 +87,21 @@ export function parseYamlToBuilderState(yamlString: string): {
     candlestickAliases
   );
   const risk = convertRisk(parsed.risk);
+  const positionManagement = convertPositionManagement(
+    (parsed as KisStrategyFile & {
+      position_management?: {
+        entry_splits?: Array<{ percent: number; trigger: string; drop_percent?: number }>;
+        exit_splits?: Array<{ percent: number; trigger: string; target_percent?: number; hold_days?: number }>;
+        cycle_reentry?: {
+          enabled: boolean;
+          base_amount: number;
+          split_count: number;
+          drop_percent: number;
+          take_profit_percent: number;
+        };
+      };
+    }).position_management
+  );
 
   const metadata = {
     id: parsed.strategy.id || "",
@@ -96,7 +112,7 @@ export function parseYamlToBuilderState(yamlString: string): {
     author: parsed.metadata?.author || "user",
   };
 
-  return { state: { metadata, indicators, entry, exit, risk }, warnings };
+  return { state: { metadata, indicators, entry, exit, risk, positionManagement }, warnings };
 }
 
 /**
@@ -336,5 +352,74 @@ function convertRisk(risk: KisStrategyFile["risk"]): RiskManagement {
       enabled: risk?.trailing_stop?.enabled ?? false,
       percent: risk?.trailing_stop?.percent ?? 3,
     },
+  };
+}
+
+function convertPositionManagement(positionManagement?: {
+  entry_splits?: Array<{ percent: number; trigger: string; drop_percent?: number }>;
+  exit_splits?: Array<{ percent: number; trigger: string; target_percent?: number; hold_days?: number }>;
+  cycle_reentry?: {
+    enabled: boolean;
+    base_amount: number;
+    split_count: number;
+    drop_percent: number;
+    take_profit_percent: number;
+  };
+}): PositionManagement {
+  const entrySplits = positionManagement?.entry_splits ?? [];
+  const exitSplits = positionManagement?.exit_splits ?? [];
+  const cycleReentry = positionManagement?.cycle_reentry;
+
+  return {
+    splitEntriesEnabled: entrySplits.length > 0,
+    splitExitsEnabled: exitSplits.length > 0,
+    entrySteps: entrySplits.length > 0
+      ? entrySplits.map((step, index) => ({
+          id: `entry_step_${index + 1}`,
+          enabled: true,
+          allocationPercent: step.percent,
+          trigger: step.trigger === "additional_drop_pct" ? "additional_drop_pct" : "signal",
+          dropPercent: step.drop_percent,
+        }))
+      : [
+          { id: "entry_step_1", enabled: true, allocationPercent: 100, trigger: "signal" },
+          { id: "entry_step_2", enabled: false, allocationPercent: 0, trigger: "additional_drop_pct", dropPercent: 3 },
+          { id: "entry_step_3", enabled: false, allocationPercent: 0, trigger: "additional_drop_pct", dropPercent: 6 },
+          { id: "entry_step_4", enabled: false, allocationPercent: 0, trigger: "additional_drop_pct", dropPercent: 9 },
+          { id: "entry_step_5", enabled: false, allocationPercent: 0, trigger: "additional_drop_pct", dropPercent: 12 },
+        ],
+    exitSteps: exitSplits.length > 0
+      ? exitSplits.map((step, index) => ({
+          id: `exit_step_${index + 1}`,
+          enabled: true,
+          allocationPercent: step.percent,
+          trigger: (
+            step.trigger === "take_profit_pct" ||
+            step.trigger === "stop_loss_pct" ||
+            step.trigger === "trailing_stop_pct" ||
+            step.trigger === "hold_days"
+          ) ? step.trigger : "exit_signal",
+          targetPercent: step.target_percent,
+          holdDays: step.hold_days,
+        }))
+      : [
+          { id: "exit_step_1", enabled: true, allocationPercent: 100, trigger: "exit_signal" },
+          { id: "exit_step_2", enabled: false, allocationPercent: 0, trigger: "take_profit_pct", targetPercent: 5 },
+        ],
+    cycleReentry: cycleReentry?.enabled
+      ? {
+          enabled: true,
+          baseAmount: cycleReentry.base_amount,
+          splitCount: cycleReentry.split_count,
+          dropPercent: cycleReentry.drop_percent,
+          takeProfitPercent: cycleReentry.take_profit_percent,
+        }
+      : {
+          enabled: false,
+          baseAmount: 5_000_000,
+          splitCount: 5,
+          dropPercent: 5,
+          takeProfitPercent: 3,
+        },
   };
 }
