@@ -552,7 +552,7 @@ export default function ExecutePage() {
                 </span>
               </div>
               <div className="mt-3 space-y-1 text-xs text-slate-500 dark:text-slate-400">
-                <p>실행 주기: 60초</p>
+                <p>실행 주기: 20초</p>
                 <p>마지막 실행: {runnerStatus?.last_run_at ? new Date(runnerStatus.last_run_at).toLocaleString() : "-"}</p>
                 <p>마지막 시작: {runnerStatus?.last_started_at ? new Date(runnerStatus.last_started_at).toLocaleString() : "-"}</p>
                 {runnerStatus?.last_error && (

@@ -89,7 +89,7 @@ class ExecuteRequest(BaseModel):
 
 
 class RunnerStartRequest(ExecuteRequest):
-    interval_seconds: int = 60
+    interval_seconds: int = 20
 
 
 class BuildRequest(BaseModel):

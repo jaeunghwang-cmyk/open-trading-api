@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 STATE_DIR = Path.home() / ".kis_strategy_builder"
 STATE_FILE = STATE_DIR / "signal_runner.json"
-DEFAULT_INTERVAL_SECONDS = 60
+DEFAULT_INTERVAL_SECONDS = 20
 
 _state_lock = threading.Lock()
 _run_lock = threading.Lock()
