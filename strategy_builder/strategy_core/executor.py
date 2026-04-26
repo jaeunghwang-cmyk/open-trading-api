@@ -15,7 +15,7 @@ import importlib.util
 import os
 import re
 import tempfile
-from datetime import datetime, time, timedelta
+from datetime import datetime, time
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
@@ -368,20 +368,13 @@ def _generate_cycle_reentry_signal(
             )
 
     if pending_order_id:
-        pending_submitted_at = str(saved_state.get("pending_submitted_at") or "").strip()
-        try:
-            pending_dt = datetime.fromisoformat(pending_submitted_at)
-        except ValueError:
-            pending_dt = datetime.now()
-        if datetime.now() - pending_dt < timedelta(minutes=15):
-            return Signal(
-                stock_code=stock_code,
-                stock_name=stock_name,
-                action=Action.HOLD,
-                strength=0.0,
-                reason="최근 접수한 주문의 체결/취소 여부 확인 대기 중",
-            )
-        clear_pending_order(strategy_key, stock_code)
+        return Signal(
+            stock_code=stock_code,
+            stock_name=stock_name,
+            action=Action.HOLD,
+            strength=0.0,
+            reason="기존 예약/미체결 주문의 체결 또는 취소 확인 전까지 신규 주문을 보류합니다.",
+        )
 
     position = holdings[holdings["stock_code"] == stock_code] if not holdings.empty else holdings
     is_holding = not position.empty
