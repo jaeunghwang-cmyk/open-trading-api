@@ -127,6 +127,7 @@ class RunnerStatusResponse(BaseModel):
     active: bool
     authenticated: bool
     current_mode: str
+    message: Optional[str] = None
     session: Optional[Dict[str, Any]] = None
     last_started_at: Optional[str] = None
     last_stopped_at: Optional[str] = None
@@ -366,6 +367,7 @@ async def get_runner_status_api():
         active=bool(runner.get("active")),
         authenticated=bool(runner.get("authenticated")),
         current_mode=str(runner.get("current_mode") or get_current_mode()),
+        message=runner.get("message"),
         session=runner.get("session"),
         last_started_at=runner.get("last_started_at"),
         last_stopped_at=runner.get("last_stopped_at"),
@@ -384,7 +386,8 @@ async def start_runner_api(request: RunnerStartRequest):
         raise HTTPException(status_code=401, detail="인증이 필요합니다")
 
     blocked_codes = _find_blocking_pending_stocks(request.stocks, get_current_mode())
-    if blocked_codes:
+    allowed_stocks = [code for code in request.stocks if code not in blocked_codes]
+    if not allowed_stocks:
         blocked_names = [f"{get_stock_name(code)} ({code})" for code in blocked_codes]
         raise HTTPException(
             status_code=409,
@@ -392,12 +395,20 @@ async def start_runner_api(request: RunnerStartRequest):
             + ", ".join(blocked_names),
         )
 
-    runner = start_runner(request.model_dump())
+    payload = request.model_dump()
+    payload["stocks"] = allowed_stocks
+    runner = start_runner(payload)
+    message = None
+    if blocked_codes:
+        blocked_names = [f"{get_stock_name(code)} ({code})" for code in blocked_codes]
+        message = "아래 종목은 예약주문/미체결 주문이 남아 있어 제외하고 시작했습니다: " + ", ".join(blocked_names)
+
     return RunnerStatusResponse(
         status="success",
         active=bool(runner.get("active")),
         authenticated=is_authenticated(),
         current_mode=get_current_mode(),
+        message=message,
         session=runner.get("session"),
         last_started_at=runner.get("last_started_at"),
         last_stopped_at=runner.get("last_stopped_at"),
@@ -411,13 +422,19 @@ async def start_runner_api(request: RunnerStartRequest):
 @router.post("/runner/stop", response_model=RunnerStatusResponse)
 async def stop_runner_api():
     from core.signal_runner import stop_runner
+    from core.cycle_reentry_state import clear_pending_orders_for_stocks
 
     runner = stop_runner()
+    session = runner.get("session") or {}
+    stock_codes = list(session.get("stocks") or [])
+    cleared = clear_pending_orders_for_stocks(stock_codes)
+    message = f"{cleared}개 종목의 로컬 대기 상태를 함께 정리했습니다." if cleared > 0 else "시그널을 중지했습니다."
     return RunnerStatusResponse(
         status="success",
         active=bool(runner.get("active")),
         authenticated=is_authenticated(),
         current_mode=get_current_mode(),
+        message=message,
         session=runner.get("session"),
         last_started_at=runner.get("last_started_at"),
         last_stopped_at=runner.get("last_stopped_at"),
@@ -428,19 +445,6 @@ async def stop_runner_api():
     )
 
 
-@router.post("/runner/reset-pending")
-async def reset_runner_pending_api(request: RunnerPendingResetRequest):
-    from core.cycle_reentry_state import clear_pending_orders_for_stocks
-
-    if not is_authenticated():
-        raise HTTPException(status_code=401, detail="인증이 필요합니다")
-
-    cleared = clear_pending_orders_for_stocks(request.stock_codes)
-    return {
-        "status": "success",
-        "cleared_count": cleared,
-        "message": f"{cleared}개 종목의 로컬 대기 상태를 초기화했습니다.",
-    }
 
 
 @router.post("/build")

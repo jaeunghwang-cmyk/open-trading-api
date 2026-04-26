@@ -62,18 +62,6 @@ export async function stopSignalRunner(): Promise<SignalRunnerStatusResponse> {
   return apiPost<SignalRunnerStatusResponse>("/api/strategies/runner/stop");
 }
 
-export interface ResetSignalRunnerPendingResponse {
-  status: "success" | "error";
-  cleared_count: number;
-  message: string;
-}
-
-export async function resetSignalRunnerPending(stockCodes: string[]): Promise<ResetSignalRunnerPendingResponse> {
-  return apiPost<ResetSignalRunnerPendingResponse>("/api/strategies/runner/reset-pending", {
-    stock_codes: stockCodes,
-  });
-}
-
 export interface IndicatorsResponse {
   indicators: Array<{
     name: string;

@@ -77,6 +77,7 @@ export interface SignalRunnerStatusResponse {
   active: boolean;
   authenticated: boolean;
   current_mode: string;
+  message?: string | null;
   session?: SignalRunnerSession | null;
   last_started_at?: string | null;
   last_stopped_at?: string | null;
