@@ -25,6 +25,7 @@ import {
   getSignalRunnerStatus,
   startSignalRunner,
   stopSignalRunner,
+  resetSignalRunnerPending,
   type PriceData,
   type PendingOrder,
   type ExecutionHistoryItem,
@@ -263,8 +264,9 @@ export default function ExecutePage() {
       );
       setRunnerStatus(response);
       setRunnerHydrated(true);
-    } catch {
-      alert("시그널 시작 중 오류가 발생했습니다");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "시그널 시작 중 오류가 발생했습니다";
+      alert(message);
     } finally {
       setRunnerLoading(false);
     }
@@ -277,6 +279,28 @@ export default function ExecutePage() {
       setRunnerStatus(response);
     } catch {
       alert("시그널 중지 중 오류가 발생했습니다");
+    } finally {
+      setRunnerLoading(false);
+    }
+  };
+
+  const handleResetRunnerPending = async () => {
+    if (stocks.length === 0) {
+      alert("초기화할 종목이 없습니다");
+      return;
+    }
+    if (!confirm("현재 종목들의 로컬 예약/미체결 대기 상태를 초기화할까요?\n실제 증권사 주문은 취소되지 않습니다.")) {
+      return;
+    }
+    setRunnerLoading(true);
+    try {
+      const response = await resetSignalRunnerPending(stocks);
+      alert(response.message);
+      await fetchExecutionHistory();
+      await fetchRunnerStatus();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "대기 상태 초기화 중 오류가 발생했습니다";
+      alert(message);
     } finally {
       setRunnerLoading(false);
     }
@@ -504,6 +528,19 @@ export default function ExecutePage() {
                 시그널 중지
               </button>
             </div>
+
+            <button
+              onClick={handleResetRunnerPending}
+              disabled={runnerLoading || stocks.length === 0 || !authStatus.authenticated}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-amber-50 text-amber-700 border border-amber-200 rounded-xl hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium focus-ring dark:bg-amber-900/20 dark:text-amber-300 dark:border-amber-900/40 dark:hover:bg-amber-900/30"
+            >
+              {runnerLoading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Square className="w-4 h-4" />
+              )}
+              대기 상태 초기화
+            </button>
 
             <label className="flex items-center justify-center gap-2 text-sm text-slate-600 dark:text-slate-300">
               <input

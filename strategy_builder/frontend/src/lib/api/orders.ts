@@ -113,6 +113,8 @@ export interface CycleStatusItem {
   last_buy_quantity: number;
   last_sell_price: number;
   last_sell_quantity: number;
+  pending_order_id?: string;
+  pending_order_type?: string;
   updated_at?: string | null;
 }
 

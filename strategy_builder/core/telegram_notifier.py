@@ -42,19 +42,19 @@ def send_message(text: str) -> bool:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    for attempt in range(3):
+    for attempt in range(4):
         try:
-            with urllib.request.urlopen(request, timeout=10) as response:
+            with urllib.request.urlopen(request, timeout=20) as response:
                 return 200 <= response.status < 300
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="ignore")
             logger.warning("텔레그램 알림 전송 실패: %s | body=%s", exc, body)
             return False
         except (urllib.error.URLError, TimeoutError) as exc:
-            if attempt == 2:
+            if attempt == 3:
                 logger.warning("텔레그램 알림 전송 실패: %s", exc)
                 return False
-            time.sleep(1.0 * (attempt + 1))
+            time.sleep(2.0 * (attempt + 1))
     return False
 
 

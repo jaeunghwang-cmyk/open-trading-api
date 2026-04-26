@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from core.cycle_reentry_state import _load_all as load_cycle_states, clear_state
+from core.cycle_reentry_state import _load_all as load_cycle_states, clear_pending_order, clear_state
 import pandas as pd
 
 from core.data_fetcher import get_deposit, get_holdings, get_pending_orders, get_reserved_orders
@@ -356,6 +356,8 @@ def sync_execution_state(env_dv: str = "real", force: bool = False) -> Dict[str,
             )
             _append_history(state, event)
             new_events.append(event)
+            if submitted.get("strategy_key"):
+                clear_pending_order(str(submitted["strategy_key"]), submitted["stock_code"])
             if submitted.get("strategy_key") and submitted["action"] == "SELL":
                 if not curr_holding or int(curr_holding.get("quantity", 0) or 0) == 0:
                     clear_state(str(submitted["strategy_key"]), stock_code)
@@ -378,6 +380,8 @@ def sync_execution_state(env_dv: str = "real", force: bool = False) -> Dict[str,
                 "note": "미체결 주문이 종료되었지만 체결 수량 변화가 없어 알림 없이 기록만 남김",
             }
             _append_history(state, cancel_event)
+            if submitted.get("strategy_key"):
+                clear_pending_order(str(submitted["strategy_key"]), submitted["stock_code"])
 
     for event in new_events:
         _send_fill_notification(event)
@@ -424,6 +428,8 @@ def get_execution_snapshot(
                 "last_buy_quantity": int((latest_by_stock.get((stock_code, "BUY")) or {}).get("quantity", 0) or 0),
                 "last_sell_price": int((latest_by_stock.get((stock_code, "SELL")) or {}).get("price", 0) or 0),
                 "last_sell_quantity": int((latest_by_stock.get((stock_code, "SELL")) or {}).get("quantity", 0) or 0),
+                "pending_order_id": str(cycle_state.get("pending_order_id", "") or ""),
+                "pending_order_type": str(cycle_state.get("pending_order_type", "") or ""),
                 "updated_at": cycle_state.get("updated_at"),
             })
 

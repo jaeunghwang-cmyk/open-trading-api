@@ -78,8 +78,15 @@ export function CycleExecutionPanel({
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className="font-medium text-slate-900 dark:text-slate-100">
-                    {status.stock_name}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="font-medium text-slate-900 dark:text-slate-100">
+                      {status.stock_name}
+                    </div>
+                    {status.pending_order_id ? (
+                      <span className="px-2 py-1 rounded-full text-[11px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                        {status.pending_order_type === "reserve" ? "예약주문 대기 중" : "미체결 주문 대기 중"}
+                      </span>
+                    ) : null}
                   </div>
                   <div className="text-xs text-slate-400 font-mono">
                     {status.stock_code} · {status.strategy_key}

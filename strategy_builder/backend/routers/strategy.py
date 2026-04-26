@@ -22,6 +22,7 @@ from strategy_core.executor import (
 )
 from backend import authenticate, is_authenticated, get_current_mode
 import kis_auth as ka
+from core.data_fetcher import get_pending_orders, get_reserved_orders
 from strategy_core.dsl.codegen import StrategyCodeGenerator, generate_strategy_file
 from strategy_core.dsl.parser import parse_strategy, StrategyDSLParser
 from strategy_core.dsl.converter import builder_state_to_dsl
@@ -34,6 +35,22 @@ def _api_sleep():
     """모드에 따른 API 호출 간격 sleep (kis_auth rate limiter 보완)"""
     interval = 0.2 if ka.isPaperTrading() else 0.05
     time.sleep(interval)
+
+
+def _find_blocking_pending_stocks(stocks: List[str], mode: str) -> List[str]:
+    pending_df, pending_ok = get_pending_orders(mode)
+    reserved_df, reserved_ok = get_reserved_orders(mode)
+
+    blocked: set[str] = set()
+    target_codes = set(stocks)
+
+    if pending_ok and not pending_df.empty:
+        blocked.update(code for code in pending_df["stock_code"].astype(str).tolist() if code in target_codes)
+
+    if reserved_ok and not reserved_df.empty:
+        blocked.update(code for code in reserved_df["stock_code"].astype(str).tolist() if code in target_codes)
+
+    return sorted(blocked)
 
 
 
@@ -117,6 +134,10 @@ class RunnerStatusResponse(BaseModel):
     last_error: Optional[str] = None
     last_results: List[SignalResult] = []
     last_logs: List[LogEntry] = []
+
+
+class RunnerPendingResetRequest(BaseModel):
+    stock_codes: List[str] = []
 
 
 # ============================================
@@ -362,6 +383,15 @@ async def start_runner_api(request: RunnerStartRequest):
     if not is_authenticated():
         raise HTTPException(status_code=401, detail="인증이 필요합니다")
 
+    blocked_codes = _find_blocking_pending_stocks(request.stocks, get_current_mode())
+    if blocked_codes:
+        blocked_names = [f"{get_stock_name(code)} ({code})" for code in blocked_codes]
+        raise HTTPException(
+            status_code=409,
+            detail="아래 종목은 예약주문/미체결 주문이 남아 있어 시그널을 시작할 수 없습니다: "
+            + ", ".join(blocked_names),
+        )
+
     runner = start_runner(request.model_dump())
     return RunnerStatusResponse(
         status="success",
@@ -396,6 +426,21 @@ async def stop_runner_api():
         last_results=[SignalResult(**item) for item in runner.get("last_results", [])],
         last_logs=[LogEntry(**item) for item in runner.get("last_logs", [])],
     )
+
+
+@router.post("/runner/reset-pending")
+async def reset_runner_pending_api(request: RunnerPendingResetRequest):
+    from core.cycle_reentry_state import clear_pending_orders_for_stocks
+
+    if not is_authenticated():
+        raise HTTPException(status_code=401, detail="인증이 필요합니다")
+
+    cleared = clear_pending_orders_for_stocks(request.stock_codes)
+    return {
+        "status": "success",
+        "cleared_count": cleared,
+        "message": f"{cleared}개 종목의 로컬 대기 상태를 초기화했습니다.",
+    }
 
 
 @router.post("/build")

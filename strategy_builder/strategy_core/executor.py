@@ -15,12 +15,19 @@ import importlib.util
 import os
 import re
 import tempfile
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
-from core.cycle_reentry_state import clear_state, get_state
-from core.data_fetcher import get_current_price, get_daily_prices, get_pending_orders
+import pandas as pd
+
+from core.cycle_reentry_state import clear_pending_order, clear_state, get_state
+from core.data_fetcher import (
+    get_current_price,
+    get_daily_prices,
+    get_pending_orders,
+    get_reserved_orders,
+)
 from core.position_manager import PositionManager
 from core.signal import Action, Signal
 from strategy_core.dsl.converter import builder_state_to_dsl
@@ -260,8 +267,16 @@ def _run_cycle_reentry_on_stocks(
     position_manager = PositionManager(env_dv=env_dv)
     holdings = position_manager.get_positions(refresh=True)
     pending_orders, pending_ok = get_pending_orders(env_dv)
+    reserved_orders, reserved_ok = get_reserved_orders(env_dv)
     strategy_key = _get_cycle_strategy_key(builder_state, strategy_name)
     cycle_config = builder_state.get("positionManagement", {}).get("cycleReentry", {})
+
+    merged_pending = []
+    if pending_ok and not pending_orders.empty:
+        merged_pending.append(pending_orders)
+    if reserved_ok and not reserved_orders.empty:
+        merged_pending.append(reserved_orders)
+    all_pending_orders = pd.concat(merged_pending, ignore_index=True) if merged_pending else None
 
     results = []
     for code in stocks:
@@ -275,7 +290,7 @@ def _run_cycle_reentry_on_stocks(
                 strategy_key=strategy_key,
                 cycle_config=cycle_config,
                 holdings=holdings,
-                pending_orders=pending_orders if pending_ok else None,
+                pending_orders=all_pending_orders,
                 env_dv=env_dv,
             )
             result = {
@@ -337,6 +352,8 @@ def _generate_cycle_reentry_signal(
     previous_close = _get_previous_close(stock_code, env_dv)
     current_quote = get_current_price(stock_code, env_dv)
     current_price = int(current_quote.get("price", 0) or 0)
+    saved_state = get_state(strategy_key, stock_code)
+    pending_order_id = str(saved_state.get("pending_order_id") or "").strip()
 
     if pending_orders is not None and not pending_orders.empty:
         stock_pending = pending_orders[pending_orders["stock_code"] == stock_code]
@@ -349,6 +366,22 @@ def _generate_cycle_reentry_signal(
                 strength=0.0,
                 reason=f"미체결 주문 {pending_qty}주 대기 중",
             )
+
+    if pending_order_id:
+        pending_submitted_at = str(saved_state.get("pending_submitted_at") or "").strip()
+        try:
+            pending_dt = datetime.fromisoformat(pending_submitted_at)
+        except ValueError:
+            pending_dt = datetime.now()
+        if datetime.now() - pending_dt < timedelta(minutes=15):
+            return Signal(
+                stock_code=stock_code,
+                stock_name=stock_name,
+                action=Action.HOLD,
+                strength=0.0,
+                reason="최근 접수한 주문의 체결/취소 여부 확인 대기 중",
+            )
+        clear_pending_order(strategy_key, stock_code)
 
     position = holdings[holdings["stock_code"] == stock_code] if not holdings.empty else holdings
     is_holding = not position.empty
@@ -403,6 +436,8 @@ def _generate_cycle_reentry_signal(
             reason="보유 수량 또는 평단가를 확인하지 못했습니다.",
         )
 
+    if pending_order_id:
+        clear_pending_order(strategy_key, stock_code)
     saved_state = get_state(strategy_key, stock_code)
     last_entry_price = float(saved_state.get("last_entry_price") or avg_price)
     entry_count = int(saved_state.get("entry_count") or 0)

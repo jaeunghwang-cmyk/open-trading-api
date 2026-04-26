@@ -23,7 +23,7 @@ from core.execution_tracker import (
     record_order_submission,
 )
 from core.order_executor import OrderExecutor
-from core.cycle_reentry_state import set_state
+from core.cycle_reentry_state import get_state, set_state
 from core.signal import Action, Signal
 from core.data_fetcher import (
     get_deposit,
@@ -58,6 +58,7 @@ PENDING_CACHE_TTL = 5
 _optimistic_order_nos: set[str] = set()
 _optimistic_added_at: Optional[datetime] = None
 OPTIMISTIC_GRACE_SECONDS = 15
+RESERVATION_OPTIMISTIC_GRACE_SECONDS = 1800
 
 
 def _get_cached_account(force_refresh: bool = False) -> dict:
@@ -281,7 +282,7 @@ async def execute_order_internal(request: OrderRequest) -> OrderResponse:
         }
 
         add_log("success", f"주문 실행 성공 (주문번호: {order_id})")
-        _update_cycle_reentry_state(request)
+        _update_cycle_reentry_state(request, str(order_id), reserve_order)
         record_order_submission(
             order_no=str(order_id),
             stock_code=request.stock_code,
@@ -344,7 +345,7 @@ async def execute_order(request: OrderRequest):
     return await execute_order_internal(request)
 
 
-def _update_cycle_reentry_state(request: OrderRequest) -> None:
+def _update_cycle_reentry_state(request: OrderRequest, order_id: str, reserve_order: bool) -> None:
     context = request.strategy_context or {}
     if context.get("mode") != "cycle_reentry":
         return
@@ -363,12 +364,17 @@ def _update_cycle_reentry_state(request: OrderRequest) -> None:
             reference_price = int(raw_price)
 
     entry_count = int(context.get("step_index") or 1)
+    current_state = get_state(strategy_key, request.stock_code)
     set_state(
         strategy_key,
         request.stock_code,
         {
+            **current_state,
             "last_entry_price": int(reference_price or 0),
             "entry_count": entry_count,
+            "pending_order_id": order_id,
+            "pending_order_type": "reserve" if reserve_order else request.order_type,
+            "pending_submitted_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat(),
         },
     )
@@ -611,14 +617,29 @@ async def get_pending_orders_api():
         merged = list(api_orders)
         if _optimistic_added_at and _optimistic_order_nos:
             grace_elapsed = (now - _optimistic_added_at).total_seconds()
-            if grace_elapsed < OPTIMISTIC_GRACE_SECONDS:
-                missing = _optimistic_order_nos - api_order_nos
-                if missing and _pending_cache:
-                    for item in _pending_cache:
-                        if item.order_no in missing:
-                            merged.append(item)
-                    logging.info(f"Optimistic Grace: {len(missing)}건 보존 ({grace_elapsed:.0f}s/{OPTIMISTIC_GRACE_SECONDS}s)")
-            else:
+            if _pending_cache:
+                kept_missing: set[str] = set()
+                for item in _pending_cache:
+                    if item.order_no in api_order_nos or item.order_no not in _optimistic_order_nos:
+                        continue
+                    grace_limit = (
+                        RESERVATION_OPTIMISTIC_GRACE_SECONDS
+                        if getattr(item, "is_reservation", False)
+                        else OPTIMISTIC_GRACE_SECONDS
+                    )
+                    if grace_elapsed < grace_limit:
+                        merged.append(item)
+                        kept_missing.add(item.order_no)
+
+                if kept_missing:
+                    logging.info(
+                        "Optimistic Grace: %d건 보존 (elapsed=%ss)",
+                        len(kept_missing),
+                        int(grace_elapsed),
+                    )
+
+            max_grace = RESERVATION_OPTIMISTIC_GRACE_SECONDS
+            if grace_elapsed >= max_grace:
                 _optimistic_order_nos.clear()
                 _optimistic_added_at = None
                 logging.info("Optimistic Grace 만료 - API 결과만 사용")

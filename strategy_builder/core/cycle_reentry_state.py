@@ -41,6 +41,51 @@ def set_state(strategy_key: str, stock_code: str, value: Dict[str, Any]) -> None
     _save_all(state)
 
 
+def update_state(strategy_key: str, stock_code: str, value: Dict[str, Any]) -> None:
+    state = _load_all()
+    bucket = state.setdefault(strategy_key, {}).get(stock_code, {})
+    bucket.update(value)
+    state.setdefault(strategy_key, {})[stock_code] = bucket
+    _save_all(state)
+
+
+def clear_pending_order(strategy_key: str, stock_code: str) -> None:
+    state = _load_all()
+    strategy_bucket = state.get(strategy_key, {})
+    entry = strategy_bucket.get(stock_code, {})
+    if not entry:
+        return
+    for key in ("pending_order_id", "pending_order_type", "pending_submitted_at"):
+        entry.pop(key, None)
+    strategy_bucket[stock_code] = entry
+    state[strategy_key] = strategy_bucket
+    _save_all(state)
+
+
+def clear_pending_orders_for_stocks(stock_codes: list[str] | None = None) -> int:
+    state = _load_all()
+    targets = set(stock_codes or [])
+    cleared = 0
+
+    for strategy_key, strategy_bucket in list(state.items()):
+        for stock_code, entry in list(strategy_bucket.items()):
+            if targets and stock_code not in targets:
+                continue
+            had_pending = any(
+                key in entry for key in ("pending_order_id", "pending_order_type", "pending_submitted_at")
+            )
+            if not had_pending:
+                continue
+            for key in ("pending_order_id", "pending_order_type", "pending_submitted_at"):
+                entry.pop(key, None)
+            strategy_bucket[stock_code] = entry
+            cleared += 1
+        state[strategy_key] = strategy_bucket
+
+    _save_all(state)
+    return cleared
+
+
 def clear_state(strategy_key: str, stock_code: str) -> None:
     state = _load_all()
     strategy_bucket = state.get(strategy_key, {})
