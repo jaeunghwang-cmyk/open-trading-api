@@ -62,6 +62,25 @@ export async function stopSignalRunner(): Promise<SignalRunnerStatusResponse> {
   return apiPost<SignalRunnerStatusResponse>("/api/strategies/runner/stop");
 }
 
+export interface CycleStateActionResponse {
+  status: "success" | "error";
+  message: string;
+}
+
+export async function stopCycleState(strategyKey: string, stockCode: string): Promise<CycleStateActionResponse> {
+  return apiPost<CycleStateActionResponse>("/api/strategies/cycle-state/stop", {
+    strategy_key: strategyKey,
+    stock_code: stockCode,
+  });
+}
+
+export async function deleteCycleState(strategyKey: string, stockCode: string): Promise<CycleStateActionResponse> {
+  return apiPost<CycleStateActionResponse>("/api/strategies/cycle-state/delete", {
+    strategy_key: strategyKey,
+    stock_code: stockCode,
+  });
+}
+
 export interface IndicatorsResponse {
   indicators: Array<{
     name: string;

@@ -25,6 +25,10 @@ def _load_all() -> Dict[str, Any]:
         return {}
 
 
+def load_all_states() -> Dict[str, Any]:
+    return _load_all()
+
+
 def _save_all(state: Dict[str, Any]) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -25,6 +25,7 @@ import {
   getSignalRunnerStatus,
   startSignalRunner,
   stopSignalRunner,
+  deleteCycleState,
   type PriceData,
   type PendingOrder,
   type ExecutionHistoryItem,
@@ -37,6 +38,8 @@ import type { OrderRequest, OrderResult } from "@/types/order";
 import type { BuyableInfo } from "@/types/account";
 
 export default function ExecutePage() {
+  const signalGenerateTemporarilyDisabled = true;
+
   const { status: authStatus } = useAuth();
   const { holdings, balance, fetchHoldings, fetchBalance, resetThrottle, isLoading: accountLoading } = useAccount();
   const {
@@ -235,6 +238,20 @@ export default function ExecutePage() {
       alert("주문/체결 이력 전체 삭제 중 오류가 발생했습니다");
     }
   }, [fetchExecutionHistory]);
+
+  const handleDeleteCycle = useCallback(async (strategyKey: string, stockCode: string) => {
+    if (!confirm(`${stockCode} 사이클 현황을 삭제하고 종료할까요?`)) {
+      return;
+    }
+    try {
+      const response = await deleteCycleState(strategyKey, stockCode);
+      alert(response.message);
+      await fetchExecutionHistory();
+      await fetchRunnerStatus();
+    } catch {
+      alert("사이클 현황 삭제 중 오류가 발생했습니다");
+    }
+  }, [fetchExecutionHistory, fetchRunnerStatus]);
 
   const handleExecute = async () => {
     if (stocks.length === 0) {
@@ -473,8 +490,8 @@ export default function ExecutePage() {
             {/* Execute Button */}
             <button
               onClick={handleExecute}
-              disabled={!selectedStrategy || stocks.length === 0 || isExecuting || !authStatus.authenticated}
-              className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-primary text-white rounded-xl hover:bg-primary-dark disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium focus-ring"
+              disabled={signalGenerateTemporarilyDisabled || !selectedStrategy || stocks.length === 0 || isExecuting || !authStatus.authenticated}
+              className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-primary/45 text-white/80 rounded-xl hover:bg-primary/55 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium focus-ring"
               aria-label="시그널 생성"
             >
               {isExecuting ? (
@@ -501,7 +518,7 @@ export default function ExecutePage() {
                 ) : (
                   <Radio className="w-4 h-4" />
                 )}
-                시그널 시작
+                사이클 시작
               </button>
               <button
                 onClick={handleStopRunner}
@@ -513,7 +530,7 @@ export default function ExecutePage() {
                 ) : (
                   <Square className="w-4 h-4" />
                 )}
-                시그널 중지
+                사이클 중지
               </button>
             </div>
 
@@ -571,6 +588,7 @@ export default function ExecutePage() {
               isLoading={executionSyncing}
               onDeleteSelected={handleDeleteHistorySelected}
               onDeleteAll={handleDeleteHistoryAll}
+              onDeleteCycle={handleDeleteCycle}
             />
           </div>
 

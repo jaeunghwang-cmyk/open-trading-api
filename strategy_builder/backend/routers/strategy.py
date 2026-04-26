@@ -141,6 +141,11 @@ class RunnerPendingResetRequest(BaseModel):
     stock_codes: List[str] = []
 
 
+class CycleStateActionRequest(BaseModel):
+    strategy_key: str
+    stock_code: str
+
+
 # ============================================
 # API Endpoints
 # ============================================
@@ -443,6 +448,34 @@ async def stop_runner_api():
         last_results=[SignalResult(**item) for item in runner.get("last_results", [])],
         last_logs=[LogEntry(**item) for item in runner.get("last_logs", [])],
     )
+
+
+@router.post("/cycle-state/stop")
+async def stop_cycle_state_api(request: CycleStateActionRequest):
+    from core.cycle_reentry_state import clear_state
+
+    if not is_authenticated():
+        raise HTTPException(status_code=401, detail="인증이 필요합니다")
+
+    clear_state(request.strategy_key, request.stock_code)
+    return {
+        "status": "success",
+        "message": f"{request.stock_code} 사이클을 종료했습니다.",
+    }
+
+
+@router.post("/cycle-state/delete")
+async def delete_cycle_state_api(request: CycleStateActionRequest):
+    from core.cycle_reentry_state import clear_state
+
+    if not is_authenticated():
+        raise HTTPException(status_code=401, detail="인증이 필요합니다")
+
+    clear_state(request.strategy_key, request.stock_code)
+    return {
+        "status": "success",
+        "message": f"{request.stock_code} 사이클 현황을 삭제했습니다.",
+    }
 
 
 

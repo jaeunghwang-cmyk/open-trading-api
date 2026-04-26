@@ -11,6 +11,7 @@ interface CycleExecutionPanelProps {
   isLoading?: boolean;
   onDeleteSelected?: (eventIds: string[]) => Promise<void> | void;
   onDeleteAll?: () => Promise<void> | void;
+  onDeleteCycle?: (strategyKey: string, stockCode: string) => Promise<void> | void;
 }
 
 export function CycleExecutionPanel({
@@ -19,6 +20,7 @@ export function CycleExecutionPanel({
   isLoading,
   onDeleteSelected,
   onDeleteAll,
+  onDeleteCycle,
 }: CycleExecutionPanelProps) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const allSelected = useMemo(
@@ -104,6 +106,17 @@ export function CycleExecutionPanel({
                 <Metric label="마지막 기준가" value={status.last_entry_price ? `${status.last_entry_price.toLocaleString()}원` : "-"} />
                 <Metric label="마지막 매도" value={status.last_sell_price ? `${status.last_sell_price.toLocaleString()}원 / ${status.last_sell_quantity}주` : "-"} />
                 <Metric label="업데이트" value={status.updated_at ? status.updated_at.replace("T", " ").slice(5, 16) : "-"} />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 mt-3">
+                <button
+                  type="button"
+                  onClick={() => onDeleteCycle?.(status.strategy_key, status.stock_code)}
+                  className="inline-flex items-center gap-1 rounded-lg border border-red-200 dark:border-red-900/50 px-2.5 py-1.5 text-xs text-red-600 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/30"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  삭제 및 종료
+                </button>
               </div>
             </div>
           ))
